@@ -70,12 +70,13 @@ class ARSessionManager {
       }
       
       // --- THIS IS THE FIX ---
-      // We call fromJson, which expects a List<dynamic> and correctly handles the conversion.
+      // Use fromJson, which is defined in json_converters.dart
+      // It expects a List<dynamic>, so we use toList()
       return MatrixConverter().fromJson(serializedProjectionMatrix.toList());
       // --- END FIX ---
 
     } catch (e) {
-      print('Error caught getting projection matrix: ' + e.toString());
+      print('Error caught getting projection matrix: 'D + e.toString());
       return null;
     }
   }
@@ -92,7 +93,7 @@ class ARSessionManager {
       });
       return MatrixConverter().fromJson(serializedCameraPose!);
     } catch (e) {
-      print('Error caught: ' + e.toString());
+      print('Error caught: 's + e.toString());
       return null;
     }
   }
