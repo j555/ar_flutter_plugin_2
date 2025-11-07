@@ -59,7 +59,6 @@ class ARSessionManager {
     }
   }
 
-  // ----------------- NEW METHOD ADDED HERE -----------------
   /// Returns the camera projection matrix in Matrix4 format
   Future<Matrix4?> getProjectionMatrix() async {
     try {
@@ -69,14 +68,17 @@ class ARSessionManager {
       if (serializedProjectionMatrix == null) {
         return null;
       }
-      // We can reuse the existing MatrixConverter's logic from `fromJson`
-      return MatrixConverter().fromList(serializedProjectionMatrix.toList());
+      
+      // --- THIS IS THE FIX ---
+      // We call fromJson, which expects a List<dynamic> and correctly handles the conversion.
+      return MatrixConverter().fromJson(serializedProjectionMatrix.toList());
+      // --- END FIX ---
+
     } catch (e) {
       print('Error caught getting projection matrix: ' + e.toString());
       return null;
     }
   }
-  // ----------------- END OF NEW METHOD -----------------
 
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {
