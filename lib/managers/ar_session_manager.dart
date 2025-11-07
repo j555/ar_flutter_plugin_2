@@ -32,8 +32,6 @@ class ARSessionManager {
   late ARHitResultHandler onPlaneOrPointTap;
 
   /// Receives total number of Planes when a plane is detected and added to the view
-  // --- THIS IS THE FIX ---
-  // Made the handler nullable to fix LateInitializationError
   ARPlaneResultHandler? onPlaneDetected;
 
   /// Callback that is triggered once error is triggered
@@ -51,7 +49,7 @@ class ARSessionManager {
   /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getCameraPose() async {
     try {
-      // Expect a Map, not a List
+      // FIX: Expect a Map, not a List
       final poseMap =
           await _channel.invokeMethod<Map<Object?, Object?>>('getCameraPose', {});
       if (poseMap == null) return null;
@@ -75,7 +73,7 @@ class ARSessionManager {
       // Construct the Matrix4 from the translation and rotation
       return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
-      print('Error caught: ' + e.toString());
+      print('Error caught in getCameraPose: ' + e.toString());
       return null;
     }
   }
@@ -106,7 +104,7 @@ class ARSessionManager {
       if (anchor.name.isEmpty) {
         throw Exception("Anchor can not be resolved. Anchor name is empty.");
       }
-      // Expect a Map, not a List
+      // FIX: Expect a Map, not a List
       final poseMap =
           await _channel.invokeMethod<Map<Object?, Object?>>('getAnchorPose', {
         "anchorId": anchor.name,
@@ -132,7 +130,7 @@ class ARSessionManager {
       // Construct the Matrix4 from the translation and rotation
       return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
-      print('Error caught: ' + e.toString());
+      print('Error caught in getPose: ' + e.toString());
       return null;
     }
   }
@@ -224,8 +222,7 @@ class ARSessionManager {
           }
           break;
         case 'onPlaneDetected':
-          // --- THIS IS THE FIX ---
-          // Added a null check before calling
+          // FIX: Added a null check
           if (onPlaneDetected != null) {
             final planeCountResult = call.arguments as int;
             onPlaneDetected!(planeCountResult);
@@ -240,7 +237,7 @@ class ARSessionManager {
           }
       }
     } catch (e) {
-      print('Error caught: ' + e.toString());
+      print('Error caught in _platformCallHandler: ' + e.toString());
     }
     return Future.value();
   }

@@ -106,7 +106,7 @@ class ArView(
                 "getAnchorPose" -> handleGetAnchorPose(call, result)
                 "getCameraPose" -> handleGetCameraPose(result)
                 
-                // ----------------- MAKE SURE THIS IS PRESENT -----------------
+                // --- THIS IS THE NATIVE FIX ---
                 "getProjectionMatrix" -> {
                     val session = sceneView.session
                     if (session == null) {
@@ -140,7 +140,7 @@ class ArView(
                         result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
                     }
                 }
-                // ----------------- END OF NEW METHOD -----------------
+                // --- END OF NATIVE FIX ---
 
                 "snapshot" -> handleSnapshot(result)
                 "disableCamera" -> handleDisableCamera(result)
