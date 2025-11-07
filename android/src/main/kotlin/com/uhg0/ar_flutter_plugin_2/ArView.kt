@@ -106,7 +106,7 @@ class ArView(
                 "getAnchorPose" -> handleGetAnchorPose(call, result)
                 "getCameraPose" -> handleGetCameraPose(result)
                 
-                // ----------------- NEW METHOD ADDED HERE -----------------
+                // ----------------- MAKE SURE THIS IS PRESENT -----------------
                 "getProjectionMatrix" -> {
                     val session = sceneView.session
                     if (session == null) {
@@ -116,6 +116,7 @@ class ArView(
                 
                     try {
                         // Get the camera from the session's *current frame*
+                        // We must call session.update() to get the latest frame
                         val frame = session.update()
                         if (frame == null) {
                             result.error("FRAME_NOT_AVAILABLE", "AR frame is not available.", null)
