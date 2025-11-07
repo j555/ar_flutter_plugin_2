@@ -46,13 +46,33 @@ class ARSessionManager {
     }
   }
 
+  // --- THIS FUNCTION IS NOW FIXED ---
   /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getCameraPose() async {
     try {
-      final serializedCameraPose =
-          await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
-      // This is returning a List<dynamic>, so we use fromJson which expects that.
-      return MatrixConverter().fromJson(serializedCameraPose!);
+      // 1. Expect a Map, not a List
+      final poseMap =
+          await _channel.invokeMethod<Map<Object?, Object?>>('getCameraPose', {});
+      if (poseMap == null) return null;
+
+      // 2. Manually parse the Map
+      final position = poseMap['position'] as Map<Object?, Object?>;
+      final rotation = poseMap['rotation'] as Map<Object?, Object?>;
+
+      final translation = Vector3(
+        position['x'] as double,
+        position['y'] as double,
+        position['z'] as double,
+      );
+      final quaternion = Quaternion(
+        rotation['x'] as double,
+        rotation['y'] as double,
+        rotation['z'] as double,
+        rotation['w'] as double,
+      );
+
+      // 3. Construct the Matrix4 from the translation and rotation
+      return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
       print('Error caught: ' + e.toString());
       return null;
@@ -69,11 +89,9 @@ class ARSessionManager {
         return null;
       }
       
-      // --- THIS IS THE FIX ---
       // Use fromJson, which is defined in json_converters.dart
       // It expects a List<dynamic>, so we use toList()
       return MatrixConverter().fromJson(serializedProjectionMatrix.toList());
-      // --- END FIX ---
 
     } catch (e) {
       print('Error caught getting projection matrix: ' + e.toString());
@@ -81,17 +99,38 @@ class ARSessionManager {
     }
   }
 
+  // --- THIS FUNCTION IS ALSO FIXED ---
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
       if (anchor.name.isEmpty) {
         throw Exception("Anchor can not be resolved. Anchor name is empty.");
       }
-      final serializedCameraPose =
-          await _channel.invokeMethod<List<dynamic>>('getAnchorPose', {
+      // 1. Expect a Map, not a List
+      final poseMap =
+          await _channel.invokeMethod<Map<Object?, Object?>>('getAnchorPose', {
         "anchorId": anchor.name,
       });
-      return MatrixConverter().fromJson(serializedCameraPose!);
+      if (poseMap == null) return null;
+
+      // 2. Manually parse the Map
+      final position = poseMap['position'] as Map<Object?, Object?>;
+      final rotation = poseMap['rotation'] as Map<Object?, Object?>;
+
+      final translation = Vector3(
+        position['x'] as double,
+        position['y'] as double,
+        position['z'] as double,
+      );
+      final quaternion = Quaternion(
+        rotation['x'] as double,
+        rotation['y'] as double,
+        rotation['z'] as double,
+        rotation['w'] as double,
+      );
+
+      // 3. Construct the Matrix4 from the translation and rotation
+      return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
       print('Error caught: ' + e.toString());
       return null;
