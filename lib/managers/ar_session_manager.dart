@@ -32,7 +32,9 @@ class ARSessionManager {
   late ARHitResultHandler onPlaneOrPointTap;
 
   /// Receives total number of Planes when a plane is detected and added to the view
-  late ARPlaneResultHandler onPlaneDetected;
+  // --- THIS IS THE FIX ---
+  // Made the handler nullable to fix LateInitializationError
+  ARPlaneResultHandler? onPlaneDetected;
 
   /// Callback that is triggered once error is triggered
   ErrorHandler? onError;
@@ -46,16 +48,15 @@ class ARSessionManager {
     }
   }
 
-  // --- THIS FUNCTION IS NOW FIXED ---
   /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getCameraPose() async {
     try {
-      // 1. Expect a Map, not a List
+      // Expect a Map, not a List
       final poseMap =
           await _channel.invokeMethod<Map<Object?, Object?>>('getCameraPose', {});
       if (poseMap == null) return null;
 
-      // 2. Manually parse the Map
+      // Manually parse the Map
       final position = poseMap['position'] as Map<Object?, Object?>;
       final rotation = poseMap['rotation'] as Map<Object?, Object?>;
 
@@ -71,7 +72,7 @@ class ARSessionManager {
         rotation['w'] as double,
       );
 
-      // 3. Construct the Matrix4 from the translation and rotation
+      // Construct the Matrix4 from the translation and rotation
       return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
       print('Error caught: ' + e.toString());
@@ -99,21 +100,20 @@ class ARSessionManager {
     }
   }
 
-  // --- THIS FUNCTION IS ALSO FIXED ---
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
       if (anchor.name.isEmpty) {
         throw Exception("Anchor can not be resolved. Anchor name is empty.");
       }
-      // 1. Expect a Map, not a List
+      // Expect a Map, not a List
       final poseMap =
           await _channel.invokeMethod<Map<Object?, Object?>>('getAnchorPose', {
         "anchorId": anchor.name,
       });
       if (poseMap == null) return null;
 
-      // 2. Manually parse the Map
+      // Manually parse the Map
       final position = poseMap['position'] as Map<Object?, Object?>;
       final rotation = poseMap['rotation'] as Map<Object?, Object?>;
 
@@ -129,7 +129,7 @@ class ARSessionManager {
         rotation['w'] as double,
       );
 
-      // 3. Construct the Matrix4 from the translation and rotation
+      // Construct the Matrix4 from the translation and rotation
       return Matrix4.compose(translation, quaternion, Vector3(1.0, 1.0, 1.0));
     } catch (e) {
       print('Error caught: ' + e.toString());
@@ -224,9 +224,11 @@ class ARSessionManager {
           }
           break;
         case 'onPlaneDetected':
+          // --- THIS IS THE FIX ---
+          // Added a null check before calling
           if (onPlaneDetected != null) {
             final planeCountResult = call.arguments as int;
-            onPlaneDetected(planeCountResult);
+            onPlaneDetected!(planeCountResult);
           }
           break;
         case 'dispose':
