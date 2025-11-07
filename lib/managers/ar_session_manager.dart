@@ -51,12 +51,32 @@ class ARSessionManager {
     try {
       final serializedCameraPose =
           await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
+      // This is returning a List<dynamic>, so we use fromJson which expects that.
       return MatrixConverter().fromJson(serializedCameraPose!);
     } catch (e) {
       print('Error caught: ' + e.toString());
       return null;
     }
   }
+
+  // ----------------- NEW METHOD ADDED HERE -----------------
+  /// Returns the camera projection matrix in Matrix4 format
+  Future<Matrix4?> getProjectionMatrix() async {
+    try {
+      // The native code returns a DoubleArray(16), which is received as Float64List(16)
+      final serializedProjectionMatrix =
+          await _channel.invokeMethod<Float64List>('getProjectionMatrix');
+      if (serializedProjectionMatrix == null) {
+        return null;
+      }
+      // We can reuse the existing MatrixConverter's logic from `fromJson`
+      return MatrixConverter().fromList(serializedProjectionMatrix.toList());
+    } catch (e) {
+      print('Error caught getting projection matrix: ' + e.toString());
+      return null;
+    }
+  }
+  // ----------------- END OF NEW METHOD -----------------
 
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {

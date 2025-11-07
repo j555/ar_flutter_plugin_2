@@ -105,6 +105,42 @@ class ArView(
                 "dispose" -> dispose()
                 "getAnchorPose" -> handleGetAnchorPose(call, result)
                 "getCameraPose" -> handleGetCameraPose(result)
+                
+                // ----------------- NEW METHOD ADDED HERE -----------------
+                "getProjectionMatrix" -> {
+                    val session = sceneView.session
+                    if (session == null) {
+                        result.error("SESSION_NOT_INITIALIZED", "AR session is not available.", null)
+                        return@MethodCallHandler
+                    }
+                
+                    try {
+                        // Get the camera from the session's *current frame*
+                        val frame = session.update()
+                        if (frame == null) {
+                            result.error("FRAME_NOT_AVAILABLE", "AR frame is not available.", null)
+                            return@MethodCallHandler
+                        }
+                        
+                        val camera = frame.camera
+                        val projectionMatrix = FloatArray(16)
+                        
+                        // Get the projection matrix
+                        // We must provide near/far clipping planes. 0.1f to 100.0f are common defaults.
+                        camera.getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f)
+                
+                        // Convert from FloatArray to DoubleArray (which becomes a Float64List in Dart)
+                        val matrixData = projectionMatrix.map { it.toDouble() }.toDoubleArray()
+                        
+                        // Send the matrix back to Flutter
+                        result.success(matrixData)
+                
+                    } catch (e: Exception) {
+                        result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
+                    }
+                }
+                // ----------------- END OF NEW METHOD -----------------
+
                 "snapshot" -> handleSnapshot(result)
                 "disableCamera" -> handleDisableCamera(result)
                 "enableCamera" -> handleEnableCamera(result)
