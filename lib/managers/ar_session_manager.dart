@@ -76,7 +76,7 @@ class ARSessionManager {
       // --- END FIX ---
 
     } catch (e) {
-      print('Error caught getting projection matrix: 'D + e.toString());
+      print('Error caught getting projection matrix: ' + e.toString());
       return null;
     }
   }
@@ -93,7 +93,7 @@ class ARSessionManager {
       });
       return MatrixConverter().fromJson(serializedCameraPose!);
     } catch (e) {
-      print('Error caught: 's + e.toString());
+      print('Error caught: ' + e.toString());
       return null;
     }
   }
