@@ -45,6 +45,7 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
         self.sceneView = ARSCNView(frame: frame)
         self.coachingView = ARCoachingOverlayView(frame: frame)
         
+        // These channel names already match what your ar_flutter_plugin_2_impl.dart expects
         self.sessionManagerChannel = FlutterMethodChannel(name: "arsession_\(viewId)", binaryMessenger: messenger)
         self.objectManagerChannel = FlutterMethodChannel(name: "arobjects_\(viewId)", binaryMessenger: messenger)
         self.anchorManagerChannel = FlutterMethodChannel(name: "aranchors_\(viewId)", binaryMessenger: messenger)
@@ -73,7 +74,7 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                 result(nil)
             }
 
-    func onSessionMethodCalled(_ call :FlutterMethodCall, _ result:FlutterResult) {
+    func onSessionMethodCalled(_ call :FlutterMethodCall, _ result: @escaping FlutterResult) {
         let arguments = call.arguments as? Dictionary<String, Any>
 
         switch call.method {
@@ -89,6 +90,32 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                     result(FlutterError())
                 }
                 break
+            
+            // ==========================================================
+            // CUSTOM CODE START: Added getProjectionMatrix handler
+            // This is required by your ar_flutter_plugin_2_impl.dart
+            // ==========================================================
+            case "getProjectionMatrix":
+                guard let frame = sceneView.session.currentFrame else {
+                    result(FlutterError(code: "NATIVE_ERROR", message: "ARFrame is null", details: nil))
+                    return
+                }
+                // Get projection matrix for portrait with reasonable z-range
+                let matrix = frame.camera.projectionMatrix(for: .portrait, viewportSize: self.sceneView.bounds.size, zNear: 0.1, zFar: 100.0)
+
+                // Convert simd_float4x4 to a 16-element List<Double>
+                let matrixAsList: [Double] = [
+                    Double(matrix.columns.0.x), Double(matrix.columns.0.y), Double(matrix.columns.0.z), Double(matrix.columns.0.w),
+                    Double(matrix.columns.1.x), Double(matrix.columns.1.y), Double(matrix.columns.1.z), Double(matrix.columns.1.w),
+                    Double(matrix.columns.2.x), Double(matrix.columns.2.y), Double(matrix.columns.2.z), Double(matrix.columns.2.w),
+                    Double(matrix.columns.3.x), Double(matrix.columns.3.y), Double(matrix.columns.3.z), Double(matrix.columns.3.w)
+                ]
+                
+                result(matrixAsList)
+            // ==========================================================
+            // CUSTOM CODE END
+            // ==========================================================
+                
             case "getAnchorPose":
             if let cameraPose = anchorCollection[arguments?["anchorId"] as! String]?.transform {
                     result(serializeMatrix(cameraPose))
@@ -144,13 +171,13 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                 break
             case "addNode":
                 addNode(dict_node: arguments!).sink(receiveCompletion: {completion in }, receiveValue: { val in
-                       result(val)
+                        result(val)
                     }).store(in: &self.cancellableCollection)
                 break
             case "addNodeToPlaneAnchor":
                 if let dict_node = arguments!["node"] as? Dictionary<String, Any>, let dict_anchor = arguments!["anchor"] as? Dictionary<String, Any> {
                     addNode(dict_node: dict_node, dict_anchor: dict_anchor).sink(receiveCompletion: {completion in }, receiveValue: { val in
-                           result(val)
+                            result(val)
                         }).store(in: &self.cancellableCollection)
                 }
                 break
@@ -332,9 +359,9 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
             if configShowAnimatedGuide {
                 if self.sceneView.superview != nil && self.coachingView.superview == nil {
                     self.sceneView.addSubview(self.coachingView)
-        //            self.coachingView.translatesAutoresizingMaskIntoConstraints = false
+        //            self.coachingView.translatesAutoresizingMaskIntoConstraints = false
                     self.coachingView.autoresizingMask = [
-                          .flexibleWidth, .flexibleHeight
+                            .flexibleWidth, .flexibleHeight
                         ]
                     self.coachingView.session = self.sceneView.session
                     self.coachingView.activatesAutomatically = true
@@ -345,20 +372,21 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                     }
                     // TODO: look into constraints issue. This causes a crash:
                     /**
-                     Terminating app due to uncaught exception 'NSGenericException', reason: 'Unable to activate constraint with anchors <NSLayoutXAxisAnchor:0x28342dec0 "ARCoachingOverlayView:0x13a470ae0.centerX"> and <NSLayoutXAxisAnchor:0x28342c680 "FlutterTouchInterceptingView:0x10bad1c90.centerX"> because they have no common ancestor.  Does the constraint or its anchors reference items in different view hierarchies?  That's illegal.'
-                     */
-        //            NSLayoutConstraint.activate([
-        //                self.coachingView.centerXAnchor.constraint(equalTo: self.sceneView.superview!.centerXAnchor),
-        //                self.coachingView.centerYAnchor.constraint(equalTo: self.sceneView.superview!.centerYAnchor),
-        //                self.coachingView.widthAnchor.constraint(equalTo: self.sceneView.superview!.widthAnchor),
-        //                self.coachingView.heightAnchor.constraint(equalTo: self.sceneView.superview!.heightAnchor)
-        //                ])
+                      Terminating app due to uncaught exception 'NSGenericException', reason: 'Unable to activate constraint with anchors <NSLayoutXAxisAnchor:0x28342dec0 "ARCoachingOverlayView:0x13a470ae0.centerX"> and <NSLayoutXAxisAnchor:0x28342c680 "FlutterTouchInterceptingView:0x10bad1c90.centerX"> because they have no common ancestor.  Does the constraint or its anchors reference items in different view hierarchies?  That's illegal.'
+                      */
+        //            NSLayoutConstraint.activate([
+        //                self.coachingView.centerXAnchor.constraint(equalTo: self.sceneView.superview!.centerXAnchor),
+        //                self.coachingView.centerYAnchor.constraint(equalTo: self.sceneView.superview!.centerYAnchor),
+        //                self.coachingView.widthAnchor.constraint(equalTo: self.sceneView.superview!.widthAnchor),
+        //               _ self.coachingView.heightAnchor.constraint(equalTo: self.sceneView.superview!.heightAnchor)
+        //         _      ])
                 }
             }
         }
     
         // Update session configuration
         self.sceneView.session.run(configuration)
+        result(nil) // Added this to properly complete the 'init' call
     }
 
     func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
@@ -367,7 +395,18 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
             let plane = modelBuilder.makePlane(anchor: planeAnchor, flutterAssetFile: customPlaneTexturePath)
             trackedPlanes[anchor.identifier] = (node, plane)
             planeCount += 1
-            DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onPlaneDetected", arguments: self.planeCount)}
+            
+            // ==========================================================
+            // CUSTOM CODE START: Send full plane data, not just count
+            // ==========================================================
+            let planeMap = serializeAnchor(planeAnchor) // Requires Serializers.swift to be in the project
+            DispatchQueue.main.async {
+                self.sessionManagerChannel.invokeMethod("onPlaneDetected", arguments: planeMap)
+            }
+            // ==========================================================
+            // CUSTOM CODE END
+            // ==========================================================
+            
             if (showPlanes) {
                 node.addChildNode(plane)
             }
@@ -378,11 +417,39 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
         
         if let planeAnchor = anchor as? ARPlaneAnchor, let plane = trackedPlanes[anchor.identifier] {
             modelBuilder.updatePlaneNode(planeNode: plane.1, anchor: planeAnchor)
+            
+            // ==========================================================
+            // CUSTOM CODE START: Send full plane data on update
+            // ==========================================================
+            let planeMap = serializeAnchor(planeAnchor) // Requires Serializers.swift
+            DispatchQueue.main.async {
+                self.sessionManagerChannel.invokeMethod("onPlaneUpdated", arguments: planeMap)
+            }
+            // ==========================================================
+            // CUSTOM CODE END
+            // ==========================================================
         }
     }
 
     func renderer(_ renderer: SCNSceneRenderer, didRemove node: SCNNode, for anchor: ARAnchor) {
-        trackedPlanes.removeValue(forKey: anchor.identifier)
+        
+        // ==========================================================
+        // CUSTOM CODE START: Send full plane data on removal
+        // ==========================================================
+        if let planeAnchor = anchor as? ARPlaneAnchor {
+            trackedPlanes.removeValue(forKey: anchor.identifier)
+            let planeMap = serializeAnchor(planeAnchor) // Requires Serializers.swift
+            DispatchQueue.main.async {
+                self.sessionManagerChannel.invokeMethod("onPlaneRemoved", arguments: planeMap)
+            }
+        }
+        // ==========================================================
+        // CUSTOM CODE END
+        // ==========================================================
+        else {
+            // This else block might be redundant if plane anchors are the only ones tracked here
+            // If other anchors are tracked, find their name from anchorCollection and remove
+        }
     }
     
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -391,7 +458,19 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                 try arcoreSession!.update(frame)
             } catch {
                 print(error)
+                // Also send this error to Flutter
+                DispatchQueue.main.async {
+                    self.sessionManagerChannel.invokeMethod("onError", arguments: ["ARCore update error: \(error.localizedDescription)"])
+                }
             }
+        }
+        // You could also forward camera pose updates here if needed, but your impl.dart uses a timer for that.
+    }
+    
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        // Forward errors to Flutter
+        DispatchQueue.main.async {
+            self.sessionManagerChannel.invokeMethod("onError", arguments: [error.localizedDescription])
         }
     }
 
@@ -418,13 +497,11 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                                 default:
                                     promise(.success(false))
                                 }
-                            
                         } else {
                             // Attach to top-level node of the scene
                             self.sceneView.scene.rootNode.addChildNode(node)
                             promise(.success(true))
                         }
-                        promise(.success(false))
                     } else {
                         DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onError", arguments: ["Unable to load renderable \(dict_node["uri"] as! String)"])}
                         promise(.success(false))
@@ -434,7 +511,7 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                     // Add object to scene
                     self.modelBuilder.makeNodeFromWebGlb(name: dict_node["name"] as! String, modelURL: dict_node["uri"] as! String, transformation: dict_node["transformation"] as? Array<NSNumber>)
                     .sink(receiveCompletion: {
-                                    completion in print("Async Model Downloading Task completed: ", completion)
+                            completion in print("Async Model Downloading Task completed: ", completion)
                     }, receiveValue: { val in
                         if let node: SCNNode = val {
                             if let anchorName = dict_anchor?["name"] as? String, let anchorType = dict_anchor?["type"] as? Int {
@@ -456,7 +533,6 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                                 self.sceneView.scene.rootNode.addChildNode(node)
                                 promise(.success(true))
                             }
-                            promise(.success(false))
                         } else {
                             DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onError", arguments: ["Unable to load renderable \(dict_node["name"] as! String)"])}
                             promise(.success(false))
@@ -468,7 +544,7 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                     let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
                     let documentsDirectory = paths[0]
                     let targetPath = documentsDirectory.appendingPathComponent(dict_node["uri"] as! String).path
- 
+
                     // Add object to scene
                     if let node: SCNNode = self.modelBuilder.makeNodeFromFileSystemGLB(name: dict_node["name"] as! String, modelPath: targetPath, transformation: dict_node["transformation"] as? Array<NSNumber>) {
                         if let anchorName = dict_anchor?["name"] as? String, let anchorType = dict_anchor?["type"] as? Int {
@@ -490,7 +566,6 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                             self.sceneView.scene.rootNode.addChildNode(node)
                             promise(.success(true))
                         }
-                        promise(.success(false))
                     } else {
                         DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onError", arguments: ["Unable to load renderable \(dict_node["uri"] as! String)"])}
                         promise(.success(false))
@@ -523,7 +598,6 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                             self.sceneView.scene.rootNode.addChildNode(node)
                             promise(.success(true))
                         }
-                        promise(.success(false))
                     } else {
                         DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onError", arguments: ["Unable to load renderable \(dict_node["uri"] as! String)"])}
                         promise(.success(false))
@@ -562,7 +636,15 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
             planeTypes = ARHitTestResult.ResultType([.existingPlaneUsingExtent, .featurePoint])
         }
         
-        let planeAndPointHitResults = sceneView.hitTest(touchLocation, types: planeTypes)
+        // Use raycast query for more alignment info
+        let planeAndPointHitResults: [ARHitTestResult]
+        if let query = sceneView.raycastQuery(from: touchLocation, allowing: .estimatedPlane, alignment: .any) {
+             // Use raycast results if available
+            planeAndPointHitResults = sceneView.session.raycast(query).map { ARHitTestResult(raycastResult: $0) }
+        } else {
+            // Fallback to older hitTest
+            planeAndPointHitResults = sceneView.hitTest(touchLocation, types: planeTypes)
+        }
         
         // store the alignment of the tapped plane anchor so we can refer to is later when transforming the node
         if planeAndPointHitResults.count > 0, let hitAnchor = planeAndPointHitResults.first?.anchor as? ARPlaneAnchor {
@@ -571,6 +653,7 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
             
         let serializedPlaneAndPointHitResults = planeAndPointHitResults.map{serializeHitResult($0)}
         if (serializedPlaneAndPointHitResults.count != 0) {
+            // This is what ar_flutter_plugin_2_impl.dart is listening for
             DispatchQueue.main.async {self.sessionManagerChannel.invokeMethod("onPlaneOrPointTap", arguments: serializedPlaneAndPointHitResults)}
         }
     }

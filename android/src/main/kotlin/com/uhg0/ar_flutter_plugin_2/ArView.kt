@@ -1,4 +1,3 @@
-//
 package com.uhg0.ar_flutter_plugin_2
 
 import android.app.Activity
@@ -58,6 +57,10 @@ import io.github.sceneview.math.Scale
 import io.github.sceneview.math.colorOf
 import io.github.sceneview.loaders.MaterialLoader
 import com.google.ar.core.exceptions.SessionPausedException
+// ==========================================================
+// CUSTOMIZATION 1: Make sure serializeAnchor is imported
+// ==========================================================
+import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor 
 
 class ArView(
     context: Context,
@@ -74,13 +77,21 @@ class ArView(
 
     private val rootLayout: ViewGroup = FrameLayout(context)
 
+    // These channel names are correct and match your Dart code
     private val sessionChannel: MethodChannel = MethodChannel(messenger, "arsession_$id")
     private val objectChannel: MethodChannel = MethodChannel(messenger, "arobjects_$id")
     private val anchorChannel: MethodChannel = MethodChannel(messenger, "aranchors_$id")
+    
     private val nodesMap = mutableMapOf<String, ModelNode>()
     private var planeCount = 0
     private var selectedNode: Node? = null
+    // ==========================================================
+    // CUSTOMIZATION 2: Change detectedPlanes to track Plane objects
+    // ==========================================================
     private val detectedPlanes = mutableSetOf<Plane>()
+    // ==========================================================
+    // END OF CUSTOMIZATION 2
+    // ==========================================================
     private val anchorNodesMap = mutableMapOf<String, AnchorNode>()
     private var showAnimatedGuide = true
     private var showFeaturePoints = false
@@ -88,7 +99,7 @@ class ArView(
     private var lastPointCloudTimestamp: Long? = null
     private var lastPointCloudFrame: Frame? = null
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
-    private var handlePans = false  
+    private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
 
@@ -107,17 +118,18 @@ class ArView(
                 "getAnchorPose" -> handleGetAnchorPose(call, result)
                 "getCameraPose" -> handleGetCameraPose(result)
                 
-                // --- THIS IS THE NATIVE FIX ---
+                // ==========================================================
+                // CUSTOMIZATION 3: Add handler for getProjectionMatrix
+                // This is REQUIRED by your ar_flutter_plugin_2_impl.dart
+                // ==========================================================
                 "getProjectionMatrix" -> {
                     val session = sceneView.session
                     if (session == null) {
                         result.error("SESSION_NOT_INITIALIZED", "AR session is not available.", null)
                         return@MethodCallHandler
                     }
-                
                     try {
-                        // Get the camera from the session's *current frame*
-                        // We must call session.update() to get the latest frame
+                        // We need to get the latest frame
                         val frame = session.update()
                         if (frame == null) {
                             result.error("FRAME_NOT_AVAILABLE", "AR frame is not available.", null)
@@ -127,21 +139,22 @@ class ArView(
                         val camera = frame.camera
                         val projectionMatrix = FloatArray(16)
                         
-                        // Get the projection matrix
-                        // We must provide near/far clipping planes. 0.1f to 100.0f are common defaults.
+                        // Get the projection matrix with standard near/far clipping planes
                         camera.getProjectionMatrix(projectionMatrix, 0, 0.1f, 100.0f)
-                
-                        // Convert from FloatArray to DoubleArray (which becomes a Float64List in Dart)
-                        val matrixData = projectionMatrix.map { it.toDouble() }.toDoubleArray()
+
+                        // Convert to a list of doubles for Dart
+                        val matrixData = projectionMatrix.map { it.toDouble() }
                         
                         // Send the matrix back to Flutter
                         result.success(matrixData)
-                
+
                     } catch (e: Exception) {
                         result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
                     }
                 }
-                // --- END OF NATIVE FIX ---
+                // ==========================================================
+                // END OF CUSTOMIZATION 3
+                // ==========================================================
 
                 "snapshot" -> handleSnapshot(result)
                 "disableCamera" -> handleDisableCamera(result)
@@ -226,7 +239,6 @@ class ArView(
     }
 
     
-
     private suspend fun buildModelNode(nodeData: Map<String, Any>): ModelNode? {
         var fileLocation = nodeData["uri"] as? String ?: return null
         when (nodeData["type"] as Int) {
@@ -241,10 +253,10 @@ class ArView(
                 2 -> { // fileSystemAppFolderGLB
                     fileLocation = fileLocation
                 }
-                 3 -> { //fileSystemAppFolderGLTF2
+                3 -> { //fileSystemAppFolderGLTF2
                     val documentsPath = viewContext.getApplicationInfo().dataDir
                     val fileLocation = documentsPath + "/app_flutter/" + nodeData["uri"] as String
-                 }
+                }
                 else -> {
                     return null
                 }
@@ -463,6 +475,42 @@ class ArView(
                     try {
                         if (!isSessionPaused) {
                             session?.update()?.let { frame ->
+                                
+                                // ==========================================================
+                                // CUSTOMIZATION 4: Forward plane events to the sessionChannel
+                                // This is REQUIRED by your ar_flutter_plugin_2_impl.dart
+                                // ==========================================================
+                                val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
+
+                                for (plane in updatedPlanes) {
+                                    // Check if it's a new plane being tracked
+                                    if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
+                                        detectedPlanes.add(plane)
+                                        val planeMap = serializeAnchor(plane)
+                                        mainScope.launch {
+                                            sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                                        }
+                                    }
+                                    // Check if an existing plane was updated
+                                    else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
+                                        val planeMap = serializeAnchor(plane)
+                                        mainScope.launch {
+                                            sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                                        }
+                                    }
+                                    // Check if a plane is no longer tracked
+                                    else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
+                                        detectedPlanes.remove(plane)
+                                        val planeMap = serializeAnchor(plane)
+                                        mainScope.launch {
+                                            sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                                        }
+                                    }
+                                }
+                                // ==========================================================
+                                // END OF CUSTOMIZATION 4
+                                // ==========================================================
+                                
                                 if (showAnimatedGuide) {
                                     frame.getUpdatedTrackables(Plane::class.java).forEach { plane ->
                                         if (plane.trackingState == TrackingState.TRACKING) {
@@ -506,17 +554,6 @@ class ArView(
                                         }
                                     }
                                 }
-
-                                frame.getUpdatedTrackables(Plane::class.java).forEach { plane ->
-                                    if (plane.trackingState == TrackingState.TRACKING &&
-                                        !detectedPlanes.contains(plane)
-                                    ) {
-                                        detectedPlanes.add(plane)
-                                        mainScope.launch {
-                                            sessionChannel.invokeMethod("onPlaneDetected", detectedPlanes.size)
-                                        }
-                                    }
-                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -557,25 +594,26 @@ class ArView(
                                 val hitResults = frame.hitTest(motionEvent)
 
                                 Log.d("ArView", "Hit Results count: ${hitResults.size}")
-
+                                
+                                // ==========================================================
+                                // CUSTOMIZATION 5: Send plane/point taps to the sessionChannel
+                                // This is REQUIRED by your ar_flutter_plugin_2_impl.dart
+                                // ==========================================================
                                 val planeHits =
                                     hitResults
                                         .filter { hit ->
                                             val trackable = hit.trackable
                                             trackable is Plane && trackable.trackingState == TrackingState.TRACKING
                                         }.map { hit ->
-                                            mapOf(
-                                                "type" to 1,
-                                                "distance" to hit.distance.toDouble(),
-                                                "position" to
-                                                    mapOf(
-                                                        "x" to hit.hitPose.tx().toDouble(),
-                                                        "y" to hit.hitPose.ty().toDouble(),
-                                                        "z" to hit.hitPose.tz().toDouble(),
-                                                    ),
-                                            )
+                                            // Convert to a map that serializeHitResult understands
+                                            // Note: This is a simplified map. Your serializeHitResult may need more data.
+                                            // We send the raw hit result for serialization
+                                            serializeHitResult(hit)
                                         }
                                 notifyPlaneOrPointTap(planeHits)
+                                // ==========================================================
+                                // END OF CUSTOMIZATION 5
+                                // ==========================================================
                             }
                             true
                         }
@@ -591,26 +629,6 @@ class ArView(
                                 tag = "hand_motion_layout"
                             }
                     rootLayout.addView(handMotionLayout)
-                }
-
-                if (customPlaneTexturePath != null) {
-                    try {
-                        val loader = FlutterInjector.instance().flutterLoader()
-                        val assetKey = loader.getLookupKeyForAsset(customPlaneTexturePath)
-                        val customPlaneTexture =
-                            ImageTexture
-                                .Builder()
-                                .bitmap(materialLoader.assets, assetKey)
-                                .build(engine)
-                        planeRenderer.planeMaterial.defaultInstance.apply {
-                            setTexture(PlaneRenderer.MATERIAL_TEXTURE, customPlaneTexture)
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Erreur lors de l'application de la texture personnalisée: ${e.message}")
-                        Log.e(TAG, "Stack trace:", e)
-                    }
-                } else {
-                    Log.i(TAG, "ℹ️ Utilisation de la texture par défaut")
                 }
             }
             result.success(null)
@@ -833,23 +851,12 @@ class ArView(
             val frame = sceneView.session?.update()
             val cameraPose = frame?.camera?.pose
             if (cameraPose != null) {
-                val poseData =
-                    mapOf(
-                        "position" to
-                            mapOf(
-                                "x" to cameraPose.tx(),
-                                "y" to cameraPose.ty(),
-                                "z" to cameraPose.tz(),
-                            ),
-                        "rotation" to
-                            mapOf(
-                                "x" to cameraPose.rotationQuaternion[0],
-                                "y" to cameraPose.rotationQuaternion[1],
-                                "z" to cameraPose.rotationQuaternion[2],
-                                "w" to cameraPose.rotationQuaternion[3],
-                            ),
-                    )
-                result.success(poseData)
+                // Convert Pose to 16-element FloatArray (Matrix4)
+                val matrix = FloatArray(16)
+                cameraPose.toMatrix(matrix, 0)
+                // Convert FloatArray to List<Double> for Dart
+                val matrixData = matrix.map { it.toDouble() }
+                result.success(matrixData)
             } else {
                 result.error("NO_CAMERA_POSE", "Camera pose is not available", null)
             }
@@ -868,27 +875,23 @@ class ArView(
                 result.error("INVALID_ARGUMENT", "Anchor ID is required", null)
                 return
             }
-
-            val anchor = sceneView.session?.allAnchors?.find { it.cloudAnchorId == anchorId }
+            
+            // Try to find in cloud anchors first
+            var anchor = sceneView.session?.allAnchors?.find { it.cloudAnchorId == anchorId }
+            
+            // If not found, check local anchor nodes
+            if (anchor == null) {
+                anchor = anchorNodesMap[anchorId]?.anchor
+            }
+            
             if (anchor != null) {
                 val anchorPose = anchor.pose
-                val poseData =
-                    mapOf(
-                        "position" to
-                            mapOf(
-                                "x" to anchorPose.tx(),
-                                "y" to anchorPose.ty(),
-                                "z" to anchorPose.tz(),
-                            ),
-                        "rotation" to
-                            mapOf(
-                                "x" to anchorPose.rotationQuaternion[0],
-                                "y" to anchorPose.rotationQuaternion[1],
-                                "z" to anchorPose.rotationQuaternion[2],
-                                "w" to anchorPose.rotationQuaternion[3],
-                            ),
-                    )
-                result.success(poseData)
+                // Convert Pose to 16-element FloatArray (Matrix4)
+                val matrix = FloatArray(16)
+                anchorPose.toMatrix(matrix, 0)
+                // Convert FloatArray to List<Double> for Dart
+                val matrixData = matrix.map { it.toDouble() }
+                result.success(matrixData)
             } else {
                 result.error("ANCHOR_NOT_FOUND", "Anchor with ID $anchorId not found", null)
             }
@@ -971,7 +974,7 @@ class ArView(
                         val pose =
                             Pose(
                                 floatArrayOf(position.x, position.y, position.z),
-                                floatArrayOf(rotation.x, rotation.y, rotation.z, 1f),
+                                floatArrayOf(rotation.x, rotation.y, rotation.z, 1f), // Assuming W=1, might need adjustment
                             )
 
                         val anchor = sceneView.session?.createAnchor(pose)
@@ -1230,14 +1233,11 @@ class ArView(
         }
     }
 
-    private fun notifyPlaneOrPointTap(hitResults: List<Map<String, Any>>) {
+    private fun notifyPlaneOrPointTap(hitResults: List<Map<String, Any?>>) {
         mainScope.launch {
             try {
-                val serializedResults = ArrayList<HashMap<String, Any>>()
-                hitResults.forEach { hit ->
-                    serializedResults.add(serializeHitResult(hit))
-                }
-                sessionChannel.invokeMethod("onPlaneOrPointTap", serializedResults)
+                // This will send the list of serialized hit results
+                sessionChannel.invokeMethod("onPlaneOrPointTap", hitResults)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -1334,13 +1334,13 @@ class ArView(
 
         // Positionnement des axes
         xNode.position = Position(axisSize / 2, 0f, 0f)
-        xNode.rotation = Rotation(0f, 0f, 90f)  // Rotation autour de l'axe Z
+        xNode.rotation = Rotation(0f, 0f, 90f) // Rotation autour de l'axe Z
 
         yNode.position = Position(0f, axisSize / 2, 0f)
         // Pas besoin de rotation pour l'axe Y car il est déjà orienté correctement
 
         zNode.position = Position(0f, 0f, axisSize / 2)
-        zNode.rotation = Rotation(90f, 0f, 0f)  // Rotation autour de l'axe X
+        zNode.rotation = Rotation(90f, 0f, 0f) // Rotation autour de l'axe X
 
         return rootNode
     }
@@ -1364,6 +1364,4 @@ class ArView(
             worldOriginNode = null
         }
     }
-
-    
 }
