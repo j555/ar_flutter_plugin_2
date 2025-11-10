@@ -20,6 +20,7 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
+import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
 import io.flutter.FlutterInjector
@@ -1071,7 +1072,7 @@ class ArView(
         val axisRadius = 0.005f
         
         val engine = sceneView.engine
-        val materialLoader = MaterialLoader(engine, context)
+        val materialLoader = MaterialLoader(engine)
         
         val rootNode = Node(engine = engine)
         
