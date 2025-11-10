@@ -20,7 +20,6 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
-import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
 import io.flutter.FlutterInjector
@@ -1081,7 +1080,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = colorOf(1f, 0f, 0f, 1f),
+                color = io.github.sceneview.math.Color(1f, 0f, 0f, 1f), // Corrected: use Color()
                 metallic = 0.0f,
                 roughness = 0.4f
             )
@@ -1092,7 +1091,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = colorOf(0f, 1f, 0f, 1f),
+                color = io.github.sceneview.math.Color(0f, 1f, 0f, 1f), // Corrected: use Color()
                 metallic = 0.0f,
                 roughness = 0.4f
             )
@@ -1103,7 +1102,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = colorOf(0f, 0f, 1f, 1f),
+                color = io.github.sceneview.math.Color(0f, 0f, 1f, 1f), // Corrected: use Color()
                 metallic = 0.0f,
                 roughness = 0.4f
             )

@@ -1,69 +1,90 @@
 package com.uhg0.ar_flutter_plugin_2.Serialization
 
-import io.github.sceneview.math.Position
-import io.github.sceneview.math.Quaternion
-import io.github.sceneview.math.Rotation
+import com.google.ar.core.Anchor
+import com.google.ar.core.HitResult
+import com.google.ar.core.Plane
+import com.google.ar.core.Pose
 import io.github.sceneview.math.Transform
-import java.util.ArrayList
+import io.github.sceneview.math.toMatrix
+import io.github.sceneview.node.Node
+import java.util.HashMap
 
-object Deserializers {
-    
-    // This function now correctly returns a Pair of (Position, Quaternion-based Rotation)
-    // which is what handleAddAnchor needs to create a Pose.
-    fun deserializeMatrix4(transform: ArrayList<Double>): Pair<Position, Rotation> {
+object Serialization {
+    fun serializeHitResult(hitResult: HitResult): HashMap<String, Any> {
+        val serializedHitResult = HashMap<String, Any>()
+        serializedHitResult["distance"] = hitResult.distance.toDouble()
+        serializedHitResult["transform"] = serializePose(hitResult.hitPose)
+
+        // ==========================================================
+        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
+        // ==========================================================
+        // We must create an anchor to get the trackable, and then detach it.
+        val anchor = hitResult.createAnchor()
+        val trackable = anchor.trackable
         
-        val pos = Position(
-            x = transform[12].toFloat(),
-            y = transform[13].toFloat(),
-            z = transform[14].toFloat()
-        )
-
-        // Calculate quaternion from matrix
-        val m00 = transform[0].toFloat()
-        val m01 = transform[1].toFloat()
-        val m02 = transform[2].toFloat()
-        val m10 = transform[4].toFloat()
-        val m11 = transform[5].toFloat()
-        val m12 = transform[6].toFloat()
-        val m20 = transform[8].toFloat()
-        val m21 = transform[9].toFloat()
-        val m22 = transform[10].toFloat()
-        
-        val trace = m00 + m11 + m22
-        var qw: Float
-        var qx: Float
-        var qy: Float
-        var qz: Float
-
-        if (trace > 0) {
-            val S = kotlin.math.sqrt(trace + 1.0f) * 2
-            qw = 0.25f * S
-            qx = (m21 - m12) / S
-            qy = (m02 - m20) / S
-            qz = (m10 - m01) / S
-        } else if ((m00 > m11) && (m00 > m22)) {
-            val S = kotlin.math.sqrt(1.0f + m00 - m11 - m22) * 2
-            qw = (m21 - m12) / S
-            qx = 0.25f * S
-            qy = (m01 + m10) / S
-            qz = (m02 + m20) / S
-        } else if (m11 > m22) {
-            val S = kotlin.math.sqrt(1.0f + m11 - m00 - m22) * 2
-            qw = (m02 - m20) / S
-            qx = (m01 + m10) / S
-            qy = 0.25f * S
-            qz = (m12 + m21) / S
+        if (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) {
+            serializedHitResult["type"] = 1 // Type 1 for Plane
+            serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the anchor
         } else {
-            val S = kotlin.math.sqrt(1.0f + m22 - m00 - m11) * 2
-            qw = (m10 - m01) / S
-            qx = (m02 + m20) / S
-            qy = (m12 + m21) / S
-            qz = 0.25f * S
+            // Treat as a feature point
+            serializedHitResult["type"] = 0 // Type 0 for Point
+            serializedHitResult["anchor"] = serializeAnchor(anchor) // Still serialize the anchor
+        }
+        
+        // Detach the temporary anchor
+        anchor.detach()
+        // ==========================================================
+        // END OF CUSTOMIZATION
+        // ==========================================================
+
+        return serializedHitResult
+    }
+
+    fun serializeAnchor(anchor: Anchor): Map<String, Any?> {
+        val anchorMap = mutableMapOf<String, Any?>()
+        
+        // Use a unique hash code as the name if cloud ID is not available
+        anchorMap["name"] = anchor.cloudAnchorId ?: "anchor_${anchor.hashCode()}"
+        anchorMap["transform"] = serializePose(anchor.pose)
+        anchorMap["cloudanchorid"] = anchor.cloudAnchorId
+
+        // ==========================================================
+        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
+        // ==========================================================
+        val trackable = anchor.trackable
+        if (trackable is Plane) {
+        // ==========================================================
+        // END OF CUSTOMIZATION
+        // ==========================================================
+            anchorMap["type"] = 1 // Type 1 for Plane
+            anchorMap["centerPose"] = serializePose(trackable.centerPose) // Use plane's center pose
+            anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ) // Use width/height
+            anchorMap["alignment"] = trackable.type.ordinal
+        } else {
+             anchorMap["type"] = 0 // Type 0 for other anchor types
         }
 
-        // Create the quaternion-based Rotation object
-        val rot = Rotation(qx, qy, qz, qw)
-        
-        return Pair(pos, rot)
+        return anchorMap
+    }
+
+    fun serializePose(pose: Pose): List<Double> {
+        val matrix = FloatArray(16)
+        pose.toMatrix(matrix, 0)
+        return matrix.map { it.toDouble() }
+    }
+
+    fun serializeLocalTransformation(node: Node?): Map<String, Any?> {
+        if (node == null) {
+            return emptyMap()
+        }
+        val transformMap = mutableMapOf<String, Any?>()
+        transformMap["name"] = node.name
+        // Use worldTransform to get the final matrix
+        transformMap["transform"] = node.worldTransform.toMatrix().data.map { it.toDouble() }
+        return transformMap
+    }
+
+    fun serializeMatrix(matrix: Transform): List<Double> {
+        return matrix.toMatrix().data.map { it.toDouble() }
     }
 }
