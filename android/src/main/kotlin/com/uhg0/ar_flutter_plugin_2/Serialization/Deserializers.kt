@@ -1,11 +1,13 @@
 package com.uhg0.ar_flutter_plugin_2.Serialization
 
 import io.github.sceneview.math.Position
+import io.github.sceneview.math.Quaternion
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Transform
 import java.util.ArrayList
 
 object Deserializers {
+    
     // This function now correctly returns a Pair of (Position, Quaternion-based Rotation)
     // which is what handleAddAnchor needs to create a Pose.
     fun deserializeMatrix4(transform: ArrayList<Double>): Pair<Position, Rotation> {
@@ -59,7 +61,7 @@ object Deserializers {
             qz = 0.25f * S
         }
 
-        // Create the quaternion-based Rotation object
+        // Create the quaternion-based Rotation object (which is just a typealias for Quaternion)
         val rot = Rotation(qx, qy, qz, qw)
         
         return Pair(pos, rot)

@@ -20,6 +20,8 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
+// Correct imports from the 'Serialization' file
+import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
 import io.flutter.FlutterInjector
@@ -73,6 +75,9 @@ class ArView(
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
+    
+    // Keep track of detected planes to filter new vs. updated
+    private val detectedPlanes = mutableSetOf<Plane>()
 
     private val onSessionMethodCall =
         MethodChannel.MethodCallHandler { call, result ->
@@ -157,37 +162,46 @@ class ArView(
     }
 
     private fun setupSceneViewListeners() {
-        // ==========================================================
-        // CUSTOMIZATION: This is the 2.x API for plane events
-        // ==========================================================
-        sceneView.onPlaneFound = { plane: Plane, node: Node ->
-            // This is a new plane
-            val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose)) // Use the anchor from the plane
-            mainScope.launch {
-                sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+        
+        // This is the 2.x API for frame updates
+        sceneView.onSessionUpdated = { session, frame ->
+            if (isSessionPaused) return@onSessionUpdated
+
+            // ==========================================================
+            // CUSTOMIZATION: This is the 2.x API for plane events
+            // ==========================================================
+            val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
+            for (plane in updatedPlanes) {
+                if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
+                    detectedPlanes.add(plane)
+                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                    mainScope.launch {
+                        sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                    }
+                } else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
+                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                    mainScope.launch {
+                        sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                    }
+                } else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
+                    detectedPlanes.remove(plane)
+                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                    mainScope.launch {
+                        sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                    }
+                }
             }
         }
-        sceneView.onPlaneUpdated = { plane: Plane, node: Node ->
-            // This is an updated plane
-             val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-            mainScope.launch {
-                sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
-            }
-        }
-        sceneView.onPlaneRemoved = { plane: Plane, node: Node ->
-            // This plane was removed
-             val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-            mainScope.launch {
-                sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
-            }
-        }
+        
         // ==========================================================
         // CUSTOMIZATION: This is the 2.x API for tap events
         // ==========================================================
-        sceneView.onTapAR = { hitResult: HitResult, motionEvent: MotionEvent ->
+        sceneView.onTap = { motionEvent, hitResult: HitResult? ->
             // This is a tap on an AR plane or feature point
-            val serializedHit = serializeHitResult(hitResult)
-            notifyPlaneOrPointTap(listOf(serializedHit))
+            if (hitResult != null) {
+                 val serializedHit = serializeHitResult(hitResult)
+                 notifyPlaneOrPointTap(listOf(serializedHit))
+            }
         }
 
         sceneView.onTrackingFailureChanged = { reason ->
@@ -807,10 +821,15 @@ class ArView(
 
                 if (name != null && transform != null) {
                     try {
-                        // We can now just use the matrix directly
-                        val matrix = transform.map { it.toFloat() }.toFloatArray()
-                        val pose = Pose.createFromMatrix(matrix, 0)
-                        
+                        val (position, rotation) = deserializeMatrix4(transform)
+
+                        val pose =
+                            Pose(
+                                floatArrayOf(position.x, position.y, position.z),
+                                // This is the fix for the 'w' error. We now pass the quaternion.
+                                floatArrayOf(rotation.x, rotation.y, rotation.z, rotation.w),
+                            )
+
                         val anchor = sceneView.session?.createAnchor(pose)
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)
@@ -1008,7 +1027,6 @@ class ArView(
         anchorChannel.setMethodCallHandler(null)
         nodesMap.clear()
         sceneView.destroy()
-        // No need to manually clear point cloud nodes, they are children of sceneView
     }
 
     private fun notifyError(error: String) {
@@ -1064,8 +1082,6 @@ class ArView(
         }
     }
 
-    // Point cloud logic is removed as sceneView.pointCloud.isEnabled handles it
-
     private fun makeWorldOriginNode(context: Context): Node {
         val axisSize = 0.1f
         val axisRadius = 0.005f
@@ -1080,7 +1096,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = io.github.sceneview.math.Color(1f, 0f, 0f, 1f), // Corrected: use Color()
+                color = io.github.sceneview.math.Color(1f, 0f, 0f, 1f), // Corrected: use io.github.sceneview.math.Color
                 metallic = 0.0f,
                 roughness = 0.4f
             )
@@ -1091,7 +1107,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = io.github.sceneview.math.Color(0f, 1f, 0f, 1f), // Corrected: use Color()
+                color = io.github.sceneview.math.Color(0f, 1f, 0f, 1f), // Corrected: use io.github.sceneview.math.Color
                 metallic = 0.0f,
                 roughness = 0.4f
             )
@@ -1102,7 +1118,7 @@ class ArView(
             radius = axisRadius,
             height = axisSize,
             materialInstance = materialLoader.createColorInstance(
-                color = io.github.sceneview.math.Color(0f, 0f, 1f, 1f), // Corrected: use Color()
+                color = io.github.sceneview.math.Color(0f, 0f, 1f, 1f), // Corrected: use io.github.sceneview.math.Color
                 metallic = 0.0f,
                 roughness = 0.4f
             )

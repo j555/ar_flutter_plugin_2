@@ -83,8 +83,4 @@ object Serialization {
         transformMap["transform"] = node.worldTransform.toMatrix().data.map { it.toDouble() }
         return transformMap
     }
-
-    fun serializeMatrix(matrix: Transform): List<Double> {
-        return matrix.toMatrix().data.map { it.toDouble() }
-    }
 }
