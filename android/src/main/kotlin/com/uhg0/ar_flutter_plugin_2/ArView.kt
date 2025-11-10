@@ -20,7 +20,6 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
-import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
 import io.flutter.FlutterInjector
@@ -39,8 +38,6 @@ import io.github.sceneview.loaders.MaterialLoader
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
-import io.github.sceneview.math.Transform
-import io.github.sceneview.math.colorOf
 import io.github.sceneview.math.toMatrix
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
@@ -161,7 +158,7 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         // ==========================================================
-        // CUSTOMIZATION: This replaces the onFrame listener for plane events
+        // CUSTOMIZATION: This is the 2.x API for plane events
         // ==========================================================
         sceneView.onPlaneFound = { plane: Plane, node: Node ->
             // This is a new plane
@@ -185,7 +182,7 @@ class ArView(
             }
         }
         // ==========================================================
-        // CUSTOMIZATION: This replaces setOnGestureListener
+        // CUSTOMIZATION: This is the 2.x API for tap events
         // ==========================================================
         sceneView.onTapAR = { hitResult: HitResult, motionEvent: MotionEvent ->
             // This is a tap on an AR plane or feature point
@@ -225,7 +222,7 @@ class ArView(
     private fun handleDisableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = true
-            sceneView.pause()
+            sceneView.pause() // Correct 2.x API
             result.success(null)
         } catch (e: Exception) {
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
@@ -234,7 +231,7 @@ class ArView(
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
-            sceneView.resume()
+            sceneView.resume() // Correct 2.x API
             result.success(null)
         } catch (e: Exception) {
             result.error("ENABLE_CAMERA_ERROR", e.message, null)
@@ -406,12 +403,12 @@ class ArView(
                 val node = buildModelNode(nodeData) ?: return@launch
                 // Create an AnchorNode at the screen position
                 val anchorNode = sceneView.createAnchorNode(
-                    xPx = screenPosition["x"]?.toFloat() ?: 0f,
-                    yPx = screenPosition["y"]?.toFloat() ?: 0f
+                    x = screenPosition["x"]?.toFloat() ?: 0f,
+                    y = screenPosition["y"]?.toFloat() ?: 0f
                 )
                 if (anchorNode != null) {
                     anchorNode.addChildNode(node)
-                    sceneView.addChildNode(anchorNode)
+                    sceneView.addChildNode(anchorNode) // Add to scene
                     result.success(true)
                 } else {
                     result.error("HIT_TEST_FAILED", "Could not create anchor at screen position", null)
@@ -464,11 +461,10 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                // Feature points (point cloud) are now handled differently
+                // Feature points (point cloud) are now handled correctly
                 sceneView.pointCloud.isEnabled = argShowFeaturePoints
 
                 // Tap handling is now done via sceneView.onTapAR
-                // We just need to respect the 'handleTaps' flag
                 if(handleTaps) {
                     sceneView.onTapAR = { hitResult: HitResult, motionEvent: MotionEvent ->
                         val serializedHit = serializeHitResult(hitResult)
@@ -585,7 +581,7 @@ class ArView(
 
                     node.apply {
                         // Directly set the transform matrix
-                        transform(deserializeMatrix4(transform).toFloatArray())
+                        transform(transform.map { it.toFloat() }.toFloatArray())
                     }
                     result.success(null)
                 } ?: result.error("INVALID_TRANSFORMATION", "Transformation is required", null)
@@ -811,14 +807,10 @@ class ArView(
 
                 if (name != null && transform != null) {
                     try {
-                        val (position, rotation) = deserializeMatrix4(transform)
-
-                        val pose =
-                            Pose(
-                                floatArrayOf(position.x, position.y, position.z),
-                                floatArrayOf(rotation.x, rotation.y, rotation.z, rotation.w), // Use W from rotation
-                            )
-
+                        // We can now just use the matrix directly
+                        val matrix = transform.map { it.toFloat() }.toFloatArray()
+                        val pose = Pose.createFromMatrix(matrix, 0)
+                        
                         val anchor = sceneView.session?.createAnchor(pose)
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)

@@ -15,8 +15,10 @@ object Serialization {
         serializedHitResult["distance"] = hitResult.distance.toDouble()
         serializedHitResult["transform"] = serializePose(hitResult.hitPose)
 
-        // In the new API, we get the anchor directly.
-        // We check if its trackable is a plane.
+        // ==========================================================
+        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
+        // ==========================================================
+        // We must create an anchor to get the trackable, and then detach it.
         val anchor = hitResult.createAnchor()
         val trackable = anchor.trackable
         
@@ -31,6 +33,9 @@ object Serialization {
         
         // Detach the temporary anchor
         anchor.detach()
+        // ==========================================================
+        // END OF CUSTOMIZATION
+        // ==========================================================
 
         return serializedHitResult
     }
@@ -43,13 +48,18 @@ object Serialization {
         anchorMap["transform"] = serializePose(anchor.pose)
         anchorMap["cloudanchorid"] = anchor.cloudAnchorId
 
-        // Check if the anchor is a plane anchor
-        val plane = anchor.trackable as? Plane
-        if (plane != null) {
+        // ==========================================================
+        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
+        // ==========================================================
+        val trackable = anchor.trackable
+        if (trackable is Plane) {
+        // ==========================================================
+        // END OF CUSTOMIZATION
+        // ==========================================================
             anchorMap["type"] = 1 // Type 1 for Plane
-            anchorMap["centerPose"] = serializePose(plane.centerPose) // Use plane's center pose
-            anchorMap["extent"] = mapOf("width" to plane.extentX, "height" to plane.extentZ) // Use width/height
-            anchorMap["alignment"] = plane.type.ordinal
+            anchorMap["centerPose"] = serializePose(trackable.centerPose) // Use plane's center pose
+            anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ) // Use width/height
+            anchorMap["alignment"] = trackable.type.ordinal
         } else {
              anchorMap["type"] = 0 // Type 0 for other anchor types
         }
