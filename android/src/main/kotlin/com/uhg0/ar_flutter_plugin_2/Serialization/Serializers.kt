@@ -15,25 +15,26 @@ object Serialization {
         serializedHitResult["distance"] = hitResult.distance.toDouble()
         serializedHitResult["transform"] = serializePose(hitResult.hitPose)
 
-        val trackable = hitResult.trackable
-        // Check if trackable is a Plane and is being tracked
+        // In the new API, we get the anchor directly.
+        // We check if its trackable is a plane.
+        val anchor = hitResult.createAnchor()
+        val trackable = anchor.trackable
+        
         if (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) {
             serializedHitResult["type"] = 1 // Type 1 for Plane
-            // We can serialize the plane's anchor
-            val planeAnchorMap = serializeAnchor(trackable.createAnchor(trackable.centerPose))
-            serializedHitResult["anchor"] = planeAnchorMap
+            serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the anchor
         } else {
             // Treat as a feature point
             serializedHitResult["type"] = 0 // Type 0 for Point
+            serializedHitResult["anchor"] = serializeAnchor(anchor) // Still serialize the anchor
         }
+        
+        // Detach the temporary anchor
+        anchor.detach()
 
         return serializedHitResult
     }
 
-    // ==========================================================
-    // CUSTOM CODE START: Added serializeAnchor function
-    // This function is required by ArView.kt
-    // ==========================================================
     fun serializeAnchor(anchor: Anchor): Map<String, Any?> {
         val anchorMap = mutableMapOf<String, Any?>()
         
@@ -55,9 +56,6 @@ object Serialization {
 
         return anchorMap
     }
-    // ==========================================================
-    // CUSTOM CODE END
-    // ==========================================================
 
     fun serializePose(pose: Pose): List<Double> {
         val matrix = FloatArray(16)

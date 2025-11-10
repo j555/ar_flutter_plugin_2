@@ -41,6 +41,7 @@ import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.Transform
 import io.github.sceneview.math.colorOf
+import io.github.sceneview.math.toMatrix
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
@@ -205,7 +206,7 @@ class ArView(
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
         try {
             // In SceneView 2.x, we can just get the matrix from the camera
-            val projectionMatrix = sceneView.camera.projectionMatrix
+            val projectionMatrix = sceneView.cameraNode.projectionTransform?.toMatrix()?.data
             if (projectionMatrix != null) {
                 // Convert to a list of doubles for Dart
                 val matrixData = projectionMatrix.map { it.toDouble() }
@@ -299,7 +300,7 @@ class ArView(
                             super.onMoveEnd(detector, e)
                             val transformMap = mapOf(
                                 "name" to name,
-                                "transform" to transform.toFloatArray().toList()
+                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() } // Send world transform
                             )
                             objectChannel.invokeMethod("onPanEnd", transformMap)
                         }
@@ -328,7 +329,7 @@ class ArView(
                             super.onRotateEnd(detector, e)
                             val transformMap = mapOf(
                                 "name" to name,
-                                "transform" to transform.toFloatArray().toList()
+                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() } // Send world transform
                             )
                             objectChannel.invokeMethod("onRotationEnd", transformMap)
                         }
@@ -698,11 +699,9 @@ class ArView(
     private fun handleGetCameraPose(result: MethodChannel.Result) {
         try {
             // In SceneView 2.x, we get the pose from the cameraNode
-            val cameraPose = sceneView.cameraNode.pose
+            val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data
             if (cameraPose != null) {
-                val matrix = FloatArray(16)
-                cameraPose.toMatrix(matrix, 0)
-                val matrixData = matrix.map { it.toDouble() }
+                val matrixData = cameraPose.map { it.toDouble() }
                 result.success(matrixData)
             } else {
                 result.error("NO_CAMERA_POSE", "Camera pose is not available", null)
