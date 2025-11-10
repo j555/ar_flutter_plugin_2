@@ -10,7 +10,7 @@ object Deserializers {
     
     // This function now correctly returns a Pair of (Position, Quaternion-based Rotation)
     // which is what handleAddAnchor needs to create a Pose.
-    fun deserializeMatrix4(transform: ArrayList<Double>): Pair<Position, Rotation> {
+    fun deserializeMatrix4(transform: ArrayList<Double>): Pair<Position, Quaternion> {
         
         val pos = Position(
             x = transform[12].toFloat(),
@@ -62,7 +62,7 @@ object Deserializers {
         }
 
         // Create the quaternion-based Rotation object (which is just a typealias for Quaternion)
-        val rot = Rotation(qx, qy, qz, qw)
+        val rot = Quaternion(qx, qy, qz, qw)
         
         return Pair(pos, rot)
     }
