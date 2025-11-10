@@ -20,7 +20,7 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
-// Correct imports from the 'Serialization' file
+// These imports are now correct
 import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
 import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
@@ -172,18 +172,23 @@ class ArView(
             // ==========================================================
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedPlanes) {
+                // Check if it's a new plane being tracked
                 if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
                     detectedPlanes.add(plane)
                     val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
                     mainScope.launch {
                         sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                     }
-                } else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
+                } 
+                // Check if an existing plane was updated
+                else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
                     val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
                     mainScope.launch {
                         sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
                     }
-                } else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
+                } 
+                // Check if a plane is no longer tracked
+                else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
                     detectedPlanes.remove(plane)
                     val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
                     mainScope.launch {
@@ -1027,6 +1032,7 @@ class ArView(
         anchorChannel.setMethodCallHandler(null)
         nodesMap.clear()
         sceneView.destroy()
+        // No need to manually clear point cloud nodes, they are children of sceneView
     }
 
     private fun notifyError(error: String) {
@@ -1081,6 +1087,8 @@ class ArView(
             }
         }
     }
+
+    // Point cloud logic is removed as sceneView.pointCloud.isEnabled handles it
 
     private fun makeWorldOriginNode(context: Context): Node {
         val axisSize = 0.1f
