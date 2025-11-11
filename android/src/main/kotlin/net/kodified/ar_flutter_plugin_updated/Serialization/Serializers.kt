@@ -4,9 +4,8 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
-// ADDED: Explicit imports to fix 'trackable' and 'TrackingState' errors
-import com.google.ar.core.Trackable
-import com.google.ar.core.TrackingState
+import com.google.ar.core.Trackable // FIXED: Added import
+import com.google.ar.core.TrackingState // FIXED: Added import
 import io.github.sceneview.math.Transform
 import io.github.sceneview.math.toMatrix
 import io.github.sceneview.node.Node
@@ -18,21 +17,27 @@ object Serialization {
         serializedHitResult["distance"] = hitResult.distance.toDouble()
         serializedHitResult["transform"] = serializePose(hitResult.hitPose)
 
-        val anchor = hitResult.createAnchor()
+        // ==========================================================
+        // FIXED: USING YOUR SUGGESTED LOGIC
+        // ==========================================================
+        val trackable = hitResult.trackable
         
-        // FIXED: 'trackable' will now be resolved
-        val trackable = anchor.trackable
-        
-        // FIXED: 'TrackingState' will now be resolved
         if (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) {
+            // Create an anchor from the plane and hit pose
+            val anchor = trackable.createAnchor(hitResult.hitPose)
             serializedHitResult["type"] = 1 // Type 1 for Plane
-            serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the anchor
+            serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the new anchor
+            // Detach the temporary anchor
+            anchor.detach()
         } else {
+            // Create a simple anchor from the hit pose
+            val anchor = hitResult.createAnchor()
             serializedHitResult["type"] = 0 // Type 0 for Point
             serializedHitResult["anchor"] = serializeAnchor(anchor) // Still serialize the anchor
+            // Detach the temporary anchor
+            anchor.detach()
         }
-        
-        anchor.detach()
+        // ==========================================================
         
         return serializedHitResult
     }
