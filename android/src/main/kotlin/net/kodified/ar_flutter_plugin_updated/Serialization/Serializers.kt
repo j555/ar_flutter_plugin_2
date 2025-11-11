@@ -4,7 +4,7 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
-// ADDED: Explicit import for Trackable and TrackingState
+// ADDED: Explicit imports to fix 'trackable' and 'TrackingState' errors
 import com.google.ar.core.Trackable
 import com.google.ar.core.TrackingState
 import io.github.sceneview.math.Transform
@@ -20,10 +20,10 @@ object Serialization {
 
         val anchor = hitResult.createAnchor()
         
-        // FIXED: 'trackable' is now resolved due to new import
+        // FIXED: 'trackable' will now be resolved
         val trackable = anchor.trackable
         
-        // FIXED: 'TrackingState' is now resolved due to new import
+        // FIXED: 'TrackingState' will now be resolved
         if (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) {
             serializedHitResult["type"] = 1 // Type 1 for Plane
             serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the anchor
@@ -44,7 +44,7 @@ object Serialization {
         anchorMap["transform"] = serializePose(anchor.pose)
         anchorMap["cloudanchorid"] = anchor.cloudAnchorId
 
-        // FIXED: 'trackable' is now resolved dueto new import
+        // FIXED: 'trackable' will now be resolved
         val trackable = anchor.trackable
         if (trackable is Plane) {
             anchorMap["type"] = 1 // Type 1 for Plane

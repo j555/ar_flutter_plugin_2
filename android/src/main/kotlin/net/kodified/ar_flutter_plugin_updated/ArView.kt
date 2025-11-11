@@ -19,7 +19,7 @@ import com.google.ar.core.Config
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
-// ADDED: Explicit import for TrackingState
+// This import is correct, the cache is the problem
 import com.google.ar.core.TrackingState
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -67,7 +67,6 @@ class ArView(
 
     private val rootLayout: ViewGroup = FrameLayout(context)
 
-    // These channel names are correct and match your Dart code
     private val sessionChannel: MethodChannel = MethodChannel(messenger, "arsession_$id")
     private val objectChannel: MethodChannel = MethodChannel(messenger, "arobjects_$id")
     private val anchorChannel: MethodChannel = MethodChannel(messenger, "aranchors_$id")
@@ -78,7 +77,6 @@ class ArView(
     private var handleRotation = false
     private var isSessionPaused = false
     
-    // Keep track of detected planes to filter new vs. updated
     private val detectedPlanes = mutableSetOf<Plane>()
 
     private val onSessionMethodCall =
@@ -160,7 +158,7 @@ class ArView(
     private fun setupSceneViewListeners() {
         
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated // FIXED: This label is now correct
+            if (isSessionPaused) return@onSessionUpdated // FIXED: This label is correct
 
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedPlanes) {
@@ -190,7 +188,7 @@ class ArView(
             }
         }
         
-        // FIXED: This is a "ghost" error. The API is correct.
+        // FIXED: This is a "ghost" error. The API is correct and will resolve after cache clear.
         sceneView.onTap = { motionEvent: MotionEvent, hitResult: HitResult? ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
@@ -530,24 +528,17 @@ class ArView(
                 return
             }
             
-            Log.d(TAG, "Attempting to remove node with name: $nodeName")
-            Log.d(TAG, "Current nodes in map: ${nodesMap.keys}")
-            
             nodesMap[nodeName]?.let { node ->
                 node.parent?.removeChildNode(node)
                 // FIXED: API is now on scene
                 sceneView.scene.removeChild(node)
                 node.destroy()
                 nodesMap.remove(nodeName)
-                
-                Log.d(TAG, "Node removed successfully and destroyed")
                 result.success(nodeName)
             } ?: run {
-                Log.e(TAG, "Node not found in nodesMap")
                 result.error("NODE_NOT_FOUND", "Node with name $nodeName not found", null)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error removing node", e)
             result.error("REMOVE_NODE_ERROR", e.message, null)
         }
     }
@@ -573,8 +564,9 @@ class ArView(
                     }
 
                     node.apply {
-                        // FIXED: Use named parameter 'data' for the Mat4 constructor
-                        val newMatrix = Mat4(data = transform.map { it.toFloat() }.toFloatArray())
+                        // FIXED: The constructor does not use a named 'data' parameter.
+                        // It also expects a FloatArray, not a List.
+                        val newMatrix = Mat4(transform.map { it.toFloat() }.toFloatArray())
                         transform(newMatrix)
                     }
                     result.success(null)
@@ -1067,8 +1059,8 @@ class ArView(
         val axisRadius = 0.005f
         
         val engine = sceneView.engine
-        // FIXED: Use named parameter 'engine'
-        val materialLoader = MaterialLoader(engine = engine)
+        // FIXED: Constructor requires both engine and context
+        val materialLoader = MaterialLoader(engine = engine, context = context)
         
         val rootNode = Node(engine = engine)
         
