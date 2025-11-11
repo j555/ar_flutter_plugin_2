@@ -421,7 +421,7 @@ class ArView(
                     val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
                     anchorNode.addChildNode(node)
                     // FIXED: API is now addChildNode
-                    sceneView.scene.addChildNode(anchorNode) 
+                    sceneView.addChildNode(anchorNode) 
                     result.success(true)
                 } else {
                     result.error("HIT_TEST_FAILED", "Could not create anchor at screen position", null)
@@ -502,7 +502,7 @@ class ArView(
                 val node = buildModelNode(nodeData)
                 if (node != null) {
                     // FIXED: API is now addChildNode
-                    sceneView.scene.addChildNode(node)
+                    sceneView.addChildNode(node)
                     node.name?.let { nodeName ->
                         nodesMap[nodeName] = node
                     }
@@ -532,7 +532,7 @@ class ArView(
             nodesMap[nodeName]?.let { node ->
                 node.parent?.removeChildNode(node)
                 // FIXED: API is now removeChildNode
-                sceneView.scene.removeChildNode(node)
+                sceneView.removeChildNode(node)
                 node.destroy()
                 nodesMap.remove(nodeName)
                 result.success(nodeName)
@@ -615,7 +615,7 @@ class ArView(
                 }
             }
             // FIXED: API is now addChildNode
-            sceneView.scene.addChildNode(cloudAnchorNode)
+            sceneView.addChildNode(cloudAnchorNode)
         } catch (e: Exception) {
             result.error("HOST_CLOUD_ANCHOR_ERROR", e.message, null)
         }
@@ -645,7 +645,7 @@ class ArView(
             ) { state, node ->
                 if (!state.isError && node != null) {
                     // FIXED: API is now addChildNode
-                    sceneView.scene.addChildNode(node)
+                    sceneView.addChildNode(node)
                     result.success(null)
                 } else {
                     result.error("RESOLVE_ERROR", "Failed to resolve cloud anchor: $state", null)
@@ -669,7 +669,7 @@ class ArView(
             val anchor = anchorNodesMap[anchorName]
             if (anchor != null) {
                 // FIXED: API is now removeChildNode
-                sceneView.scene.removeChildNode(anchor)
+                sceneView.removeChildNode(anchor)
                 anchor.anchor?.detach()
                 anchorNodesMap.remove(anchorName) // Remove from map
                 result.success(null)
@@ -805,7 +805,7 @@ class ArView(
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)
                             // FIXED: API is now addChildNode
-                            sceneView.scene.addChildNode(anchorNode)
+                            sceneView.addChildNode(anchorNode)
                             anchorNodesMap[name] = anchorNode
                             result.success(true)
                         } else {
@@ -917,7 +917,7 @@ class ArView(
             
             Log.d(TAG, "➕ Ajout du CloudAnchorNode à la scène...")
             // FIXED: API is now addChildNode
-            sceneView.scene.addChildNode(cloudAnchorNode)
+            sceneView.addChildNode(cloudAnchorNode)
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Exception lors de l'upload de l'ancre", e)
@@ -954,7 +954,7 @@ class ArView(
                 mainScope.launch {
                     if (!state.isError && node != null) {
                         // FIXED: API is now addChildNode
-                        sceneView.scene.addChildNode(node)
+                        sceneView.addChildNode(node)
                         val anchorData = mapOf(
                             "type" to 0,
                             "cloudanchorid" to cloudAnchorId
@@ -1118,12 +1118,12 @@ class ArView(
             }
             worldOriginNode?.let { node ->
                 // FIXED: API is now addChildNode
-                sceneView.scene.addChildNode(node)
+                sceneView.addChildNode(node)
             }
         } else {
             worldOriginNode?.let { node ->
                 // FIXED: API is now removeChildNode
-                sceneView.scene.removeChildNode(node)
+                sceneView.removeChildNode(node)
             }
             worldOriginNode = null
         }
