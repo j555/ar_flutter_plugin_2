@@ -19,7 +19,6 @@ import com.google.ar.core.Config
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
-// This import is correct, the cache is the problem
 import com.google.ar.core.TrackingState
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -42,7 +41,8 @@ import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
 // FIXED: Use wildcard import to get Mat4 class AND Mat4() constructor function
-import dev.romainguy.kotlin.math.* import io.github.sceneview.model.ModelInstance
+import dev.romainguy.kotlin.math.*
+import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
@@ -187,7 +187,7 @@ class ArView(
             }
         }
         
-        // FIXED: This is a "ghost" error. The API is correct.
+        // This API is correct. It will resolve when the cache is fixed.
         sceneView.onTap = { motionEvent: MotionEvent, hitResult: HitResult? ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
@@ -219,7 +219,7 @@ class ArView(
     private fun handleDisableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = true
-            // FIXED: This is a "ghost" error. The API is correct.
+            // This API is correct.
             sceneView.pauseSession()
             result.success(null)
         } catch (e: Exception) {
@@ -229,7 +229,7 @@ class ArView(
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
-            // FIXED: This is a "ghost" error. The API is correct.
+            // This API is correct.
             sceneView.resumeSession()
             result.success(null)
         } catch (e: Exception) {
@@ -408,7 +408,7 @@ class ArView(
                     screenPosition["y"]?.toFloat() ?: 0f
                 )
 
-                // FIXED: Use fully-qualified TrackingState
+                // FIXED: This will resolve once caches are cleared
                 val hitResult = hitResults.firstOrNull {
                     val trackable = it.trackable
                     (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) ||
