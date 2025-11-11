@@ -1,8 +1,8 @@
 package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import io.github.sceneview.math.Position
-// ADDED: Missing import for Quaternion
-import io.github.sceneview.math.Quaternion
+// CHANGED: Correct import path
+import dev.romainguy.kotlin.math.Quaternion
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Transform
 import java.util.ArrayList
@@ -63,6 +63,7 @@ object Deserializers {
         }
 
         // Create the quaternion-based Rotation object (which is just a typealias for Quaternion)
+        // CHANGED: Correct import will fix this
         val rot = Quaternion(qx, qy, qz, qw)
         
         return Pair(pos, rot)

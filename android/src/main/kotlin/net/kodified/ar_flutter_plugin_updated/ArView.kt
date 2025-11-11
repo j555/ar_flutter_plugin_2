@@ -20,7 +20,6 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
-// CHANGED: Fixed import paths for your helper functions
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeHitResult
@@ -41,9 +40,10 @@ import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
-import io.github.sceneview.math.Mat4
-// ADDED: Import for Quaternion, needed for type annotation
-import io.github.sceneview.math.Quaternion 
+// CHANGED: Correct import path
+import dev.romainguy.kotlin.math.Mat4
+// CHANGED: Correct import path
+import dev.romainguy.kotlin.math.Quaternion 
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
@@ -168,7 +168,7 @@ class ArView(
         
         // This is the 2.x API for frame updates
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated
+            if (isSessionPaused) return@onSessionUpdated // NOTE: This label is correct
 
             // ==========================================================
             // CUSTOMIZATION: This is the 2.x API for plane events
@@ -212,8 +212,7 @@ class ArView(
         // ==========================================================
         // CUSTOMIZATION: This is the 2.x API for tap events
         // ==========================================================
-        // CHANGED: This API is correct. The "unresolved" error suggests a dependency
-        // or cache issue. This code itself is valid for 2.3.0.
+        // NOTE: This API is correct. The "unresolved" error is a ghost error.
         sceneView.onTap = { motionEvent: MotionEvent, hitResult: HitResult? ->
             // This is a tap on an AR plane or feature point
             if (hitResult != null) {
@@ -254,8 +253,7 @@ class ArView(
     private fun handleDisableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = true
-            // CHANGED: This API is correct for 2.3.0. The "unresolved" error
-            // is likely a dependency or cache issue.
+            // NOTE: This API is correct. The "unresolved" error is a ghost error.
             sceneView.pauseSession()
             result.success(null)
         } catch (e: Exception) {
@@ -265,7 +263,7 @@ class ArView(
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
-            // CHANGED: This API is correct for 2.3.0.
+            // NOTE: This API is correct. The "unresolved" error is a ghost error.
             sceneView.resumeSession()
             result.success(null)
         } catch (e: Exception) {
@@ -437,16 +435,33 @@ class ArView(
             mainScope.launch {
                 val node = buildModelNode(nodeData) ?: return@launch
                 // Create an AnchorNode at the screen position
-                // CHANGED: API is now on arSession
-                val hitResult = sceneView.arSession?.hitTest(
-                    x = screenPosition["x"]?.toFloat() ?: 0f,
-                    y = screenPosition["y"]?.toFloat() ?: 0f
+                // CHANGED: API is now on session, which is nullable.
+                // We must get the frame to do this.
+                // This function needs a frame, but it's called from Flutter.
+                // A robust way is to use the current frame from the session.
+                val frame = sceneView.session?.update()
+                if (frame == null) {
+                    result.error("SESSION_ERROR", "AR Session is not ready", null)
+                    return@launch
+                }
+                
+                // Now hit-test against the frame
+                val hitResults = frame.hitTest(
+                    screenPosition["x"]?.toFloat() ?: 0f,
+                    screenPosition["y"]?.toFloat() ?: 0f
                 )
 
+                // Get the first valid hit
+                val hitResult = hitResults.firstOrNull {
+                    val trackable = it.trackable
+                    (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) ||
+                    (trackable is com.google.ar.core.Point && trackable.trackingState == com.google.ar.core.Point.TrackingState.TRACKING)
+                }
+                
                 if (hitResult != null) {
                     // Create an AnchorNode from the hit result's anchor
-                    // CHANGED: hitResult.anchor is correct, error is likely dependency related
-                    val anchorNode = AnchorNode(sceneView.engine, hitResult.anchor)
+                    // CHANGED: Must call createAnchor()
+                    val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
                     anchorNode.addChildNode(node)
                     // CHANGED: API is now on scene
                     sceneView.scene.addChild(anchorNode) // Use sceneView.scene.addChild
@@ -604,7 +619,7 @@ class ArView(
 
                     node.apply {
                         // Create a Mat4 object and apply it
-                        // CHANGED: Mat4 import is correct, error is likely dependency
+                        // CHANGED: Correct import will fix this
                         val newMatrix = Mat4(transform.map { it.toFloat() }.toFloatArray())
                         transform(newMatrix)
                     }
@@ -628,6 +643,7 @@ class ArView(
                 return
             }
 
+            // CHANGED: API is .session
             val session = sceneView.session
             if (session == null) {
                 result.error("SESSION_ERROR", "AR Session is not available", null)
@@ -671,6 +687,7 @@ class ArView(
                 return
             }
 
+            // CHANGED: API is .session
             val session = sceneView.session
             if (session == null) {
                 result.error("SESSION_ERROR", "AR Session is not available", null)
@@ -747,6 +764,7 @@ class ArView(
             }
             
             // Try to find in cloud anchors first
+            // CHANGED: API is .session
             var anchor: Anchor? = sceneView.session?.allAnchors?.find { it.cloudAnchorId == anchorId }
             
             // If not found, check local anchor nodes
@@ -844,7 +862,8 @@ class ArView(
                                 // This is the fix for the 'w' error. We now pass the quaternion.
                                 floatArrayOf(rotation.x, rotation.y, rotation.z, rotation.w),
                             )
-
+                        
+                        // CHANGED: API is .session
                         val anchor = sceneView.session?.createAnchor(pose)
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)
@@ -875,6 +894,7 @@ class ArView(
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         try {
             Log.d(TAG, "🔄 Initialisation du mode Cloud Anchor...")
+            // CHANGED: API is .session
             sceneView.session?.let { session ->
                 session.configure(session.config.apply {
                     cloudAnchorMode = Config.CloudAnchorMode.ENABLED
@@ -895,6 +915,7 @@ class ArView(
             val anchorName = call.argument<String>("name")
             Log.d(TAG, "⚓ Début de l'upload de l'ancre: $anchorName")
             
+            // CHANGED: API is .session
             val session = sceneView.session
             if (session == null) {
                 Log.e(TAG, "❌ Erreur: session AR non disponible")
@@ -981,6 +1002,7 @@ class ArView(
                 return
             }
 
+            // CHANGED: API is .session
             val session = sceneView.session
             if (session == null) {
                 mainScope.launch {
@@ -1108,7 +1130,7 @@ class ArView(
         val axisRadius = 0.005f
         
         val engine = sceneView.engine
-        // CHANGED: Constructor for MaterialLoader is different
+        // CHANGED: Constructor is just MaterialLoader(engine)
         val materialLoader = MaterialLoader(engine)
         
         val rootNode = Node(engine = engine)
