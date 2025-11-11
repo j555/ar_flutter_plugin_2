@@ -4,8 +4,8 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
-import com.google.ar.core.Trackable // FIXED: Added import
-import com.google.ar.core.TrackingState // FIXED: Added import
+import com.google.ar.core.Trackable // Keep this import
+import com.google.ar.core.TrackingState // Keep this import
 import io.github.sceneview.math.Transform
 import io.github.sceneview.math.toMatrix
 import io.github.sceneview.node.Node
@@ -18,7 +18,7 @@ object Serialization {
         serializedHitResult["transform"] = serializePose(hitResult.hitPose)
 
         // ==========================================================
-        // FIXED: USING YOUR SUGGESTED LOGIC
+        // FIXED: USING YOUR CORRECT LOGIC
         // ==========================================================
         val trackable = hitResult.trackable
         
@@ -49,16 +49,24 @@ object Serialization {
         anchorMap["transform"] = serializePose(anchor.pose)
         anchorMap["cloudanchorid"] = anchor.cloudAnchorId
 
-        // FIXED: 'trackable' will now be resolved
-        val trackable = anchor.trackable
-        if (trackable is Plane) {
-            anchorMap["type"] = 1 // Type 1 for Plane
-            anchorMap["centerPose"] = serializePose(trackable.centerPose)
-            anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ)
-            anchorMap["alignment"] = trackable.type.ordinal
-        } else {
-             anchorMap["type"] = 0 // Type 0 for other anchor types
-        }
+        // ==========================================================
+        // FIXED: The line 'val trackable = anchor.trackable' was WRONG and is REMOVED.
+        // We cannot get plane information from an Anchor alone.
+        // We will just report all anchors as "type 0" for now.
+        // ==========================================================
+        anchorMap["type"] = 0 // Type 0 for all anchors
+        
+        // The following code is impossible and has been removed:
+        //
+        // val trackable = anchor.trackable  <-- THIS IS THE ERROR
+        // if (trackable is Plane) {
+        //     anchorMap["type"] = 1 // Type 1 for Plane
+        //     anchorMap["centerPose"] = serializePose(trackable.centerPose)
+        //     anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ)
+        //     anchorMap["alignment"] = trackable.type.ordinal
+        // } else {
+        //      anchorMap["type"] = 0 // Type 0 for other anchor types
+        // }
 
         return anchorMap
     }
