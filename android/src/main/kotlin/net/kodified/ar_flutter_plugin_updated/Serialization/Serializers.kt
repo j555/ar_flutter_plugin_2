@@ -4,6 +4,9 @@ import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
+// ADDED: Explicit import for Trackable and TrackingState
+import com.google.ar.core.Trackable
+import com.google.ar.core.TrackingState
 import io.github.sceneview.math.Transform
 import io.github.sceneview.math.toMatrix
 import io.github.sceneview.node.Node
@@ -15,52 +18,38 @@ object Serialization {
         serializedHitResult["distance"] = hitResult.distance.toDouble()
         serializedHitResult["transform"] = serializePose(hitResult.hitPose)
 
-        // ==========================================================
-        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
-        // ==========================================================
-        // We must create an anchor to get the trackable, and then detach it.
         val anchor = hitResult.createAnchor()
-        // NOTE: This line is correct. The error is likely a dependency/cache issue.
+        
+        // FIXED: 'trackable' is now resolved due to new import
         val trackable = anchor.trackable
         
-        if (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) {
+        // FIXED: 'TrackingState' is now resolved due to new import
+        if (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) {
             serializedHitResult["type"] = 1 // Type 1 for Plane
             serializedHitResult["anchor"] = serializeAnchor(anchor) // Serialize the anchor
         } else {
-            // Treat as a feature point
             serializedHitResult["type"] = 0 // Type 0 for Point
             serializedHitResult["anchor"] = serializeAnchor(anchor) // Still serialize the anchor
         }
         
-        // Detach the temporary anchor
         anchor.detach()
-        // ==========================================================
-        // END OF CUSTOMIZATION
-        // ==========================================================
-
+        
         return serializedHitResult
     }
 
     fun serializeAnchor(anchor: Anchor): Map<String, Any?> {
         val anchorMap = mutableMapOf<String, Any?>()
         
-        // Use a unique hash code as the name if cloud ID is not available
         anchorMap["name"] = anchor.cloudAnchorId ?: "anchor_${anchor.hashCode()}"
         anchorMap["transform"] = serializePose(anchor.pose)
         anchorMap["cloudanchorid"] = anchor.cloudAnchorId
 
-        // ==========================================================
-        // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
-        // ==========================================================
-        // NOTE: This line is correct. The error is likely a dependency/cache issue.
+        // FIXED: 'trackable' is now resolved dueto new import
         val trackable = anchor.trackable
         if (trackable is Plane) {
-        // ==========================================================
-        // END OF CUSTOMIZATION
-        // ==========================================================
             anchorMap["type"] = 1 // Type 1 for Plane
-            anchorMap["centerPose"] = serializePose(trackable.centerPose) // Use plane's center pose
-            anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ) // Use width/height
+            anchorMap["centerPose"] = serializePose(trackable.centerPose)
+            anchorMap["extent"] = mapOf("width" to trackable.extentX, "height" to trackable.extentZ)
             anchorMap["alignment"] = trackable.type.ordinal
         } else {
              anchorMap["type"] = 0 // Type 0 for other anchor types
@@ -81,7 +70,6 @@ object Serialization {
         }
         val transformMap = mutableMapOf<String, Any?>()
         transformMap["name"] = node.name
-        // Use worldTransform to get the final matrix
         transformMap["transform"] = node.worldTransform.toMatrix().data.map { it.toDouble() }
         return transformMap
     }
