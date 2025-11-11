@@ -56,6 +56,6 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
     implementation 'io.github.sceneview:arsceneview:2.3.0'
     implementation 'com.google.ar:core:1.43.0'
-    implementation 'dev.romainguy.kotlin:kotlin-math-jvm:1.5.0'
+    implementation 'dev.romainguy:kotlin-math:1.5.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 }
