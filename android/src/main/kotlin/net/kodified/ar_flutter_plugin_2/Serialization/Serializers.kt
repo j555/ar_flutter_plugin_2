@@ -1,4 +1,4 @@
-package com.uhg0.ar_flutter_plugin_2.Serialization
+package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import com.google.ar.core.Anchor
 import com.google.ar.core.HitResult

@@ -1,4 +1,4 @@
-package com.uhg0.ar_flutter_plugin_2.Serialization
+package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Quaternion
