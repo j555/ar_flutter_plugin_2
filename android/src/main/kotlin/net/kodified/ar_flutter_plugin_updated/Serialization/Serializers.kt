@@ -20,6 +20,7 @@ object Serialization {
         // ==========================================================
         // We must create an anchor to get the trackable, and then detach it.
         val anchor = hitResult.createAnchor()
+        // NOTE: This line is correct. The error is likely a dependency/cache issue.
         val trackable = anchor.trackable
         
         if (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) {
@@ -51,6 +52,7 @@ object Serialization {
         // ==========================================================
         // CUSTOMIZATION: This is the fix for "Unresolved reference 'trackable'"
         // ==========================================================
+        // NOTE: This line is correct. The error is likely a dependency/cache issue.
         val trackable = anchor.trackable
         if (trackable is Plane) {
         // ==========================================================

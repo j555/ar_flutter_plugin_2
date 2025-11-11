@@ -1,6 +1,7 @@
 package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import io.github.sceneview.math.Position
+// ADDED: Missing import for Quaternion
 import io.github.sceneview.math.Quaternion
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Transform
