@@ -1,4 +1,4 @@
-package com.uhg0.ar_flutter_plugin_2
+package net.kodified.ar_flutter_plugin_updated
 
 import android.app.Activity
 import androidx.lifecycle.Lifecycle
@@ -6,6 +6,7 @@ import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import net.kodified.ar_flutter_plugin_updated.ArViewFactory
 
 class ArFlutterPlugin: FlutterPlugin, ActivityAware {
     private var activity: Activity? = null
@@ -24,8 +25,10 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
         activity = binding.activity
         lifecycle = (activity as LifecycleOwner).lifecycle
         
-        // Enregistrer la factory une fois que nous avons l'activité et le lifecycle
         flutterPluginBinding?.let { flutterBinding ->
+            // NOTE: The view factory ID "ar_flutter_plugin_2" MUST NOT change.
+            // This is the "viewType" string that the Dart-side ARView widget uses
+            // to identify which native view to create.
             flutterBinding.platformViewRegistry.registerViewFactory(
                 "ar_flutter_plugin_2",
                 ArViewFactory(
@@ -46,8 +49,8 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
         activity = binding.activity
         lifecycle = (activity as LifecycleOwner).lifecycle
         
-        // Réenregistrer la factory après les changements de configuration
         flutterPluginBinding?.let { flutterBinding ->
+            // Re-register with the same "ar_flutter_plugin_2" ID
             flutterBinding.platformViewRegistry.registerViewFactory(
                 "ar_flutter_plugin_2",
                 ArViewFactory(

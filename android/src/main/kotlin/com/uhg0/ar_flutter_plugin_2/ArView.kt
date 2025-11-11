@@ -1,4 +1,4 @@
-package com.uhg0.ar_flutter_plugin_2
+package net.kodified.ar_flutter_plugin_updated
 
 import android.app.Activity
 import android.content.Context
