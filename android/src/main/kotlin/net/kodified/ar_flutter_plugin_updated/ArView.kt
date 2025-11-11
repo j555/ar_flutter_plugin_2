@@ -40,6 +40,7 @@ import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
+// FIXED: Wildcard import to get Mat4 class AND Mat4() constructor
 import dev.romainguy.kotlin.math.*
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
