@@ -21,9 +21,9 @@ import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
 // These imports are now correct
-import com.uhg0.ar_flutter_plugin_2.Serialization.deserializeMatrix4
-import com.uhg0.ar_flutter_plugin_2.Serialization.serializeAnchor
-import com.uhg0.ar_flutter_plugin_2.Serialization.serializeHitResult
+import net.kodified.ar_flutter_plugin_updated.Serialization.deserializeMatrix4
+import net.kodified.ar_flutter_plugin_updated.Serialization.serializeAnchor
+import net.kodified.ar_flutter_plugin_updated.Serialization.serializeHitResult
 import io.flutter.FlutterInjector
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
