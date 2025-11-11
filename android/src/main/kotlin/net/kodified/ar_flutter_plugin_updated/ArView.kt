@@ -41,9 +41,8 @@ import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
-import dev.romainguy.kotlin.math.Mat4
-import dev.romainguy.kotlin.math.Quaternion 
-import io.github.sceneview.model.ModelInstance
+// FIXED: Use wildcard import to get Mat4 class AND Mat4() constructor function
+import dev.romainguy.kotlin.math.* import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
@@ -188,7 +187,7 @@ class ArView(
             }
         }
         
-        // FIXED: This is a "ghost" error. The API is correct and will resolve after cache clear.
+        // FIXED: This is a "ghost" error. The API is correct.
         sceneView.onTap = { motionEvent: MotionEvent, hitResult: HitResult? ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
@@ -296,7 +295,7 @@ class ArView(
                             super.onMoveEnd(detector, e)
                             val transformMap = mapOf(
                                 "name" to name,
-                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() } // Send world transform
+                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() }
                             )
                             objectChannel.invokeMethod("onPanEnd", transformMap)
                         }
@@ -325,7 +324,7 @@ class ArView(
                             super.onRotateEnd(detector, e)
                             val transformMap = mapOf(
                                 "name" to name,
-                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() } // Send world transform
+                                "transform" to worldTransform.toMatrix().data.map { it.toDouble() }
                             )
                             objectChannel.invokeMethod("onRotationEnd", transformMap)
                         }
@@ -419,8 +418,8 @@ class ArView(
                 if (hitResult != null) {
                     val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
                     anchorNode.addChildNode(node)
-                    // FIXED: API is now on scene
-                    sceneView.scene.addChild(anchorNode) 
+                    // FIXED: API is now addChildNode
+                    sceneView.scene.addChildNode(anchorNode) 
                     result.success(true)
                 } else {
                     result.error("HIT_TEST_FAILED", "Could not create anchor at screen position", null)
@@ -500,8 +499,8 @@ class ArView(
             mainScope.launch {
                 val node = buildModelNode(nodeData)
                 if (node != null) {
-                    // FIXED: API is now on scene
-                    sceneView.scene.addChild(node)
+                    // FIXED: API is now addChildNode
+                    sceneView.scene.addChildNode(node)
                     node.name?.let { nodeName ->
                         nodesMap[nodeName] = node
                     }
@@ -530,8 +529,8 @@ class ArView(
             
             nodesMap[nodeName]?.let { node ->
                 node.parent?.removeChildNode(node)
-                // FIXED: API is now on scene
-                sceneView.scene.removeChild(node)
+                // FIXED: API is now removeChildNode
+                sceneView.scene.removeChildNode(node)
                 node.destroy()
                 nodesMap.remove(nodeName)
                 result.success(nodeName)
@@ -564,8 +563,7 @@ class ArView(
                     }
 
                     node.apply {
-                        // FIXED: The constructor does not use a named 'data' parameter.
-                        // It also expects a FloatArray, not a List.
+                        // FIXED: The wildcard import will find the correct Mat4(FloatArray) function
                         val newMatrix = Mat4(transform.map { it.toFloat() }.toFloatArray())
                         transform(newMatrix)
                     }
@@ -614,8 +612,8 @@ class ArView(
                     result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
                 }
             }
-            // FIXED: API is now on scene
-            sceneView.scene.addChild(cloudAnchorNode)
+            // FIXED: API is now addChildNode
+            sceneView.scene.addChildNode(cloudAnchorNode)
         } catch (e: Exception) {
             result.error("HOST_CLOUD_ANCHOR_ERROR", e.message, null)
         }
@@ -644,8 +642,8 @@ class ArView(
                 cloudAnchorId,
             ) { state, node ->
                 if (!state.isError && node != null) {
-                    // FIXED: API is now on scene
-                    sceneView.scene.addChild(node)
+                    // FIXED: API is now addChildNode
+                    sceneView.scene.addChildNode(node)
                     result.success(null)
                 } else {
                     result.error("RESOLVE_ERROR", "Failed to resolve cloud anchor: $state", null)
@@ -668,8 +666,8 @@ class ArView(
 
             val anchor = anchorNodesMap[anchorName]
             if (anchor != null) {
-                // FIXED: API is now on scene
-                sceneView.scene.removeChild(anchor)
+                // FIXED: API is now removeChildNode
+                sceneView.scene.removeChildNode(anchor)
                 anchor.anchor?.detach()
                 anchorNodesMap.remove(anchorName) // Remove from map
                 result.success(null)
@@ -804,8 +802,8 @@ class ArView(
                         val anchor = sceneView.session?.createAnchor(pose)
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)
-                            // FIXED: API is now on scene
-                            sceneView.scene.addChild(anchorNode)
+                            // FIXED: API is now addChildNode
+                            sceneView.scene.addChildNode(anchorNode)
                             anchorNodesMap[name] = anchorNode
                             result.success(true)
                         } else {
@@ -916,8 +914,8 @@ class ArView(
             }
             
             Log.d(TAG, "➕ Ajout du CloudAnchorNode à la scène...")
-            // FIXED: API is now on scene
-            sceneView.scene.addChild(cloudAnchorNode)
+            // FIXED: API is now addChildNode
+            sceneView.scene.addChildNode(cloudAnchorNode)
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Exception lors de l'upload de l'ancre", e)
@@ -953,8 +951,8 @@ class ArView(
             ) { state, node ->
                 mainScope.launch {
                     if (!state.isError && node != null) {
-                        // FIXED: API is now on scene
-                        sceneView.scene.addChild(node)
+                        // FIXED: API is now addChildNode
+                        sceneView.scene.addChildNode(node)
                         val anchorData = mapOf(
                             "type" to 0,
                             "cloudanchorid" to cloudAnchorId
@@ -1118,13 +1116,13 @@ class ArView(
                 worldOriginNode = makeWorldOriginNode(viewContext)
             }
             worldOriginNode?.let { node ->
-                // FIXED: API is now on scene
-                sceneView.scene.addChild(node)
+                // FIXED: API is now addChildNode
+                sceneView.scene.addChildNode(node)
             }
         } else {
             worldOriginNode?.let { node ->
-                // FIXED: API is now on scene
-                sceneView.scene.removeChild(node)
+                // FIXED: API is now removeChildNode
+                sceneView.scene.removeChildNode(node)
             }
             worldOriginNode = null
         }

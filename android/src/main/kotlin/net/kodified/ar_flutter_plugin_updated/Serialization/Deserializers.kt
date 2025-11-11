@@ -1,16 +1,14 @@
 package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import io.github.sceneview.math.Position
-// CHANGED: Correct import path
-import dev.romainguy.kotlin.math.Quaternion
+// FIXED: Use wildcard import to get Quaternion class
+import dev.romainguy.kotlin.math.*
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Transform
 import java.util.ArrayList
 
 object Deserializers {
     
-    // This function now correctly returns a Pair of (Position, Quaternion-based Rotation)
-    // which is what handleAddAnchor needs to create a Pose.
     fun deserializeMatrix4(transform: ArrayList<Double>): Pair<Position, Quaternion> {
         
         val pos = Position(
@@ -61,9 +59,7 @@ object Deserializers {
             qy = (m12 + m21) / S
             qz = 0.25f * S
         }
-
-        // Create the quaternion-based Rotation object (which is just a typealias for Quaternion)
-        // CHANGED: Correct import will fix this
+        
         val rot = Quaternion(qx, qy, qz, qw)
         
         return Pair(pos, rot)
