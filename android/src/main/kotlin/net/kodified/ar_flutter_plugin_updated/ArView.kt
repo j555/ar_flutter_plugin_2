@@ -191,12 +191,16 @@ class ArView(
         }
         
         sceneView.onTouchEvent = { motionEvent: MotionEvent,
-                               arHitResult: HitResult? ->   // ← ARCore HitResult!
+                               collisionHitResult: io.github.sceneview.collision.HitResult? ->
 
             // -------------------------------------------------------------
-            // Bail out early if there is no hit at all
+            // Unwrap the raw ARCore HitResult that the wrapper holds.
+            // `collisionHitResult?.hitResult` returns a com.google.ar.core.HitResult?
             // -------------------------------------------------------------
-            val arHit = arHitResult ?: return@onTouchEvent false
+            val arHit: com.google.ar.core.HitResult? = collisionHitResult?.hitResult
+
+            // Bail out early if there is no ARCore hit at all
+            if (arHit == null) return@onTouchEvent false
 
             // -------------------------------------------------------------
             // Does the hit belong to a TRACKING plane or point?
