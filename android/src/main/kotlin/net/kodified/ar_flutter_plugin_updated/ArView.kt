@@ -157,7 +157,7 @@ class ArView(
     private fun setupSceneViewListeners() {
         
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated // This label is correct for the lambda
+            if (isSessionPaused) return@onSessionUpdated
 
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedPlanes) {
@@ -187,12 +187,12 @@ class ArView(
             }
         }
         
-        sceneView.onTap = { motionEvent, hitResult ->
+        sceneView.onTapListener = { motionEvent: MotionEvent, node: Node?, hitResult: HitResult? ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
                  notifyPlaneOrPointTap(listOf(serializedHit))
             }
-        }
+        } 
 
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
@@ -408,8 +408,8 @@ class ArView(
 
                 // FIXED: This will resolve now
                 val hitResult = hitResults.firstOrNull { 
-                    val trackable = it.trackable 
-                    (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) || (trackable is com.google.ar.core.Point && trackable.trackingState == com.google.ar.core.Point.TrackingState.TRACKING)
+                    val trackable = it.trackable
+                    (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || (trackable is com.google.ar.core.Point && trackable.trackingState == com.google.ar.core.Point.TrackingState.TRACKING)
                 }
                 
                 if (hitResult != null) {
@@ -467,7 +467,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                planeRenderer.pointCloudNode.isEnabled = argShowFeaturePoints
+                sceneView.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
