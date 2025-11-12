@@ -187,12 +187,12 @@ class ArView(
             }
         }
         
-        sceneView.onTap { motionEvent: MotionEvent, hitResult: HitResult? ->
+        sceneView.onTap(fun(motionEvent: MotionEvent, hitResult: HitResult?) {
             if (hitResult != null) {
                 val serializedHit = serializeHitResult(hitResult)
                 notifyPlaneOrPointTap(listOf(serializedHit))
             }
-        }
+        })
 
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
