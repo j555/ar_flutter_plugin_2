@@ -201,39 +201,46 @@ class ArView(
             val arHit: com.google.ar.core.HitResult? =
                 collisionHitResult as? com.google.ar.core.HitResult
 
-            // No hit at all → we did **not** consume the event
-            if (arHit == null) return false
+            // -------------------------------------------------------------
+            // Build the Boolean result *as the last expression* of the lambda.
+            // No `return` statements are used, so the compiler sees the
+            // correct return type (Boolean).
+            // -------------------------------------------------------------
+            if (arHit == null) {
+                // No hit → we did NOT consume the event
+                false
+            } else {
+                // ---------------------------------------------------------
+                // Does the hit belong to a TRACKING plane or point?
+                // ---------------------------------------------------------
+                val isValidHit = when (val trackable = arHit.trackable) {
+                    is Plane -> trackable.trackingState == TrackingState.TRACKING
+                    is Point -> trackable.trackingState == TrackingState.TRACKING
+                    else     -> false
+                }
 
-            // -------------------------------------------------------------
-            // Does the hit belong to a TRACKING plane or point?
-            // -------------------------------------------------------------
-            val isValidHit = when (val trackable = arHit.trackable) {
-                is Plane -> trackable.trackingState == TrackingState.TRACKING
-                is Point -> trackable.trackingState == TrackingState.TRACKING
-                else     -> false
+                if (!isValidHit) {
+                    // Not a plane/point we care about → let the view handle it
+                    false
+                } else {
+                    // -----------------------------------------------------
+                    // Serialize the ARCore HitResult (your helper expects this type)
+                    // -----------------------------------------------------
+                    val serializedHit = serializeHitResult(arHit)
+
+                    // -----------------------------------------------------
+                    // Send the result back to Flutter on the UI thread
+                    // -----------------------------------------------------
+                    activity.runOnUiThread {
+                        notifyPlaneOrPointTap(listOf(serializedHit))
+                    }
+
+                    // -----------------------------------------------------
+                    // We have handled the tap → consume the event
+                    // -----------------------------------------------------
+                    true
+                }
             }
-
-            if (!isValidHit) {
-                // Not a plane/point we care about → let the view handle it
-                return false
-            }
-
-            // -------------------------------------------------------------
-            // Serialize the ARCore HitResult (your helper expects this type)
-            // -------------------------------------------------------------
-            val serializedHit = serializeHitResult(arHit)
-
-            // -------------------------------------------------------------
-            // Send the result back to Flutter on the UI thread
-            // -------------------------------------------------------------
-            activity.runOnUiThread {
-                notifyPlaneOrPointTap(listOf(serializedHit))
-            }
-
-            // -------------------------------------------------------------
-            // We have handled the tap → consume the event
-            // -------------------------------------------------------------
-            true
         }
 
         sceneView.onTrackingFailureChanged = { reason ->
