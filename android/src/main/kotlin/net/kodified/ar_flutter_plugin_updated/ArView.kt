@@ -28,8 +28,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
-import io.github.sceneview.ar.ARSceneView
-import io.github.sceneview.ar.arcore.HitResult       
+import io.github.sceneview.ar.ARSceneView    
 import io.github.sceneview.ar.arcore.PlaneHitResult
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
@@ -190,22 +189,22 @@ class ArView(
             }
         }
         
-        sceneView.onTouchEvent = { motionEvent, hitResult ->
+        sceneView.onTouchEvent = { motionEvent, arHitResult ->
 
-            // Guard‑clause – only handle plane hits
-            val planeHit = hitResult as? PlaneHitResult ?: return@onTouchEvent false
+        // Guard‑clause – ignore null or non‑plane hits
+        val planeHit = arHitResult?.let { PlaneHitResult(it) } ?: return@onTouchEvent false
 
-            // Serialize the underlying ARCore hit
-            val serializedHit = serializeHitResult(planeHit.hitResult)
+        // Serialize the underlying ARCore hit (your existing util)
+        val serialized = serializeHitResult(planeHit.hitResult)
 
-            // UI‑thread safe call back to Flutter
-            activity.runOnUiThread {
-                notifyPlaneOrPointTap(listOf(serializedHit))
-            }
-
-            // true = we consumed the tap
-            true
+        // UI‑thread safe callback to Flutter
+        activity.runOnUiThread {
+            notifyPlaneOrPointTap(listOf(serialized))
         }
+
+        // true = we consumed the tap
+        true
+    }
 
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
@@ -480,7 +479,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                this.pointCloud?.isEnabled = argShowFeaturePoints
+                this.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
