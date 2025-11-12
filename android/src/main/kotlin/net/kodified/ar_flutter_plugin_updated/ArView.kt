@@ -157,7 +157,7 @@ class ArView(
     private fun setupSceneViewListeners() {
         
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated // FIXED: This label is correct
+            if (isSessionPaused) return@onSessionUpdated
 
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedPlanes) {
@@ -187,13 +187,12 @@ class ArView(
             }
         }
         
-        // API is on 'sceneView' for onTap
-        sceneView.onTap = { motionEvent, hitResult ->
+        sceneView.onTapListener = { motionEvent, node, hitResult ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
                  notifyPlaneOrPointTap(listOf(serializedHit))
             }
-        }
+        } 
 
 
         sceneView.onTrackingFailureChanged = { reason ->
@@ -220,7 +219,7 @@ class ArView(
     private fun handleDisableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = true
-            sceneView.pause()
+            sceneView.session?.pause()
             result.success(null)
         } catch (e: Exception) {
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
@@ -229,7 +228,7 @@ class ArView(
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
-            sceneView.resume()
+            sceneView.session?.resume()
             result.success(null)
         } catch (e: Exception) {
             result.error("ENABLE_CAMERA_ERROR", e.message, null)
@@ -417,8 +416,8 @@ class ArView(
                 
                 if (hitResult != null) {
                     val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
-                    anchorNode.addChild(node)
-                    sceneView.addChild(anchorNode)
+                    anchorNode.addChildNode(node)
+                    sceneView.addChildNode(anchorNode)
                     result.success(true)
                 } else {
                     result.error("HIT_TEST_FAILED", "Could not create anchor at screen position", null)
@@ -470,7 +469,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                pointCloud.isEnabled = argShowFeaturePoints
+                sceneView.pointCloudNode.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
@@ -497,7 +496,7 @@ class ArView(
             mainScope.launch {
                 val node = buildModelNode(nodeData)
                 if (node != null) {
-                    sceneView.addChild(node)
+                    sceneView.addChildNode(node)
                     node.name?.let { nodeName ->
                         nodesMap[nodeName] = node
                     }
@@ -525,8 +524,8 @@ class ArView(
             }
             
             nodesMap[nodeName]?.let { node ->
-                node.parent?.removeChild(node)
-                sceneView.removeChild(node)
+                node.parent?.removeChildNode(node)
+                sceneView.removeChildNode(node)
                 node.destroy()
                 nodesMap.remove(nodeName)
                 result.success(nodeName)
@@ -607,7 +606,7 @@ class ArView(
                     result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
                 }
             }
-            sceneView.addChild(cloudAnchorNode)
+            sceneView.addChildNode(cloudAnchorNode)
         } catch (e: Exception) {
             result.error("HOST_CLOUD_ANCHOR_ERROR", e.message, null)
         }
@@ -636,7 +635,7 @@ class ArView(
                 cloudAnchorId,
             ) { state, node ->
                 if (!state.isError && node != null) {
-                    sceneView.addChild(node)
+                    sceneView.addChildNode(node)
                     result.success(null)
                 } else {
                     result.error("RESOLVE_ERROR", "Failed to resolve cloud anchor: $state", null)
@@ -659,7 +658,7 @@ class ArView(
 
             val anchor = anchorNodesMap[anchorName]
             if (anchor != null) {
-                sceneView.removeChild(anchor)
+                sceneView.removeChildNode(anchor)
                 anchor.anchor?.detach()
                 anchorNodesMap.remove(anchorName) // Remove from map
                 result.success(null)
@@ -794,7 +793,7 @@ class ArView(
                         val anchor = sceneView.session?.createAnchor(pose)
                         if (anchor != null) {
                             val anchorNode = AnchorNode(sceneView.engine, anchor)
-                            sceneView.addChild(anchorNode)
+                            sceneView.addChildNode(anchorNode)
                             anchorNodesMap[name] = anchorNode
                             result.success(true)
                         } else {
@@ -905,7 +904,7 @@ class ArView(
             }
             
             Log.d(TAG, "➕ Ajout du CloudAnchorNode à la scène...")
-            sceneView.addChild(cloudAnchorNode)
+            sceneView.addChildNode(cloudAnchorNode)
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Exception lors de l'upload de l'ancre", e)
@@ -941,7 +940,7 @@ class ArView(
             ) { state, node ->
                 mainScope.launch {
                     if (!state.isError && node != null) {
-                        sceneView.addChild(node)
+                        sceneView.addChildNode(node)
                         val anchorData = mapOf(
                             "type" to 0,
                             "cloudanchorid" to cloudAnchorId
@@ -1102,13 +1101,13 @@ class ArView(
         if (show) {
             if (worldOriginNode == null) {
                 worldOriginNode = makeWorldOriginNode(viewContext)
-                worldOriginNode?.let {
-                    sceneView.addChild(it)
+                worldOriginNode?.let { node ->
+                    sceneView.addChildNode(node)
                 }
             }
         } else {
-            worldOriginNode?.let {
-                sceneView.removeChild(it)
+            worldOriginNode?.let { node ->
+                sceneView.removeChildNode(node)
             }
             worldOriginNode = null
         }
