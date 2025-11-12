@@ -18,6 +18,7 @@ import com.google.ar.core.Anchor.CloudAnchorState
 import com.google.ar.core.Config
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
+import com.google.ar.core.Point
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
@@ -47,6 +48,7 @@ import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
+import io.github.sceneview.scene.ARSceneView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -190,27 +192,36 @@ class ArView(
         
         sceneView.onTouchEvent = { motionEvent, arHitResult ->
 
-            // Guard‑clause – ignore null hits
+            // Bail out early if there is no hit at all
             val hit = arHitResult ?: return@onTouchEvent false
 
-            // Is the hit on a TRACKING plane (or point)?  If not, let the view handle it.
-            val isPlaneHit = when (val trackable = hit.trackable) {
-                is Plane   -> trackable.trackingState == TrackingState.TRACKING
-                is Point   -> trackable.trackingState == TrackingState.TRACKING
-                else       -> false
+            // ----------------------------------------------------------
+            // Determine whether the hit landed on a TRACKING plane or point
+            // ----------------------------------------------------------
+            val isValidHit = when (val trackable = hit.trackable) {
+                is Plane -> trackable.trackingState == TrackingState.TRACKING
+                is Point -> trackable.trackingState == TrackingState.TRACKING
+                else     -> false
             }
 
-            if (!isPlaneHit) return@onTouchEvent false
+            if (!isValidHit) {
+                // Not a plane/point we care about – let the view handle the event
+                return@onTouchEvent false
+            }
 
-            // Serialize the ARCore HitResult (your existing helper works on the inner hit)
+            // ----------------------------------------------------------
+            // Serialize the raw ARCore HitResult (your existing helper works on it)
+            // ----------------------------------------------------------
             val serializedHit = serializeHitResult(hit)
 
-            // UI‑thread safe callback to Flutter
+            // ----------------------------------------------------------
+            // Send the result back to Flutter on the UI thread
+            // ----------------------------------------------------------
             activity.runOnUiThread {
                 notifyPlaneOrPointTap(listOf(serializedHit))
             }
 
-            // true = we consumed the tap
+            // We consumed the tap
             true
         }
 
