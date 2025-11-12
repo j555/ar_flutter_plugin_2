@@ -29,7 +29,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView    
-import io.github.sceneview.ar.arcore.PlaneHitResult
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
@@ -191,20 +190,29 @@ class ArView(
         
         sceneView.onTouchEvent = { motionEvent, arHitResult ->
 
-        // Guard‑clause – ignore null or non‑plane hits
-        val planeHit = arHitResult?.let { PlaneHitResult(it) } ?: return@onTouchEvent false
+            // Guard‑clause – ignore null hits
+            val hit = arHitResult ?: return@onTouchEvent false
 
-        // Serialize the underlying ARCore hit (your existing util)
-        val serialized = serializeHitResult(planeHit.hitResult)
+            // Is the hit on a TRACKING plane (or point)?  If not, let the view handle it.
+            val isPlaneHit = when (val trackable = hit.trackable) {
+                is Plane   -> trackable.trackingState == TrackingState.TRACKING
+                is Point   -> trackable.trackingState == TrackingState.TRACKING
+                else       -> false
+            }
 
-        // UI‑thread safe callback to Flutter
-        activity.runOnUiThread {
-            notifyPlaneOrPointTap(listOf(serialized))
+            if (!isPlaneHit) return@onTouchEvent false
+
+            // Serialize the ARCore HitResult (your existing helper works on the inner hit)
+            val serializedHit = serializeHitResult(hit)
+
+            // UI‑thread safe callback to Flutter
+            activity.runOnUiThread {
+                notifyPlaneOrPointTap(listOf(serializedHit))
+            }
+
+            // true = we consumed the tap
+            true
         }
-
-        // true = we consumed the tap
-        true
-    }
 
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
