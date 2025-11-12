@@ -1,7 +1,6 @@
 package net.kodified.ar_flutter_plugin_updated.Serialization
 
 import io.github.sceneview.math.Position
-// FIXED: Use wildcard import to get Quaternion class
 import dev.romainguy.kotlin.math.*
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Transform
