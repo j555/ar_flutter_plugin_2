@@ -157,40 +157,42 @@ class ArView(
     private fun setupSceneViewListeners() {
         
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated // This label is correct for the lambda
-
-            val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
-            for (plane in updatedPlanes) {
-                if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
-                    detectedPlanes.add(plane)
-                    rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
-                        rootLayout.removeView(it)
+            if (!isSessionPaused) {
+                val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
+                for (plane in updatedPlanes) {
+                    if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
+                        detectedPlanes.add(plane)
+                        rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
+                            rootLayout.removeView(it)
+                        }
+                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                        mainScope.launch {
+                            sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                        }
                     }
-                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                    mainScope.launch {
-                        sessionChannel.invokeMethod("onPlaneDetected", planeMap)
-                    }
-                }
-                else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
-                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                    mainScope.launch {
-                        sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
-                    }
-                } 
-                else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
-                    detectedPlanes.remove(plane)
-                    val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                    mainScope.launch {
-                        sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                    else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
+                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                        mainScope.launch {
+                            sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                        }
+                    } 
+                    else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
+                        detectedPlanes.remove(plane)
+                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                        mainScope.launch {
+                            sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                        }
                     }
                 }
             }
         }
         
-        sceneView.onTap = { motionEvent, hitResult ->
-            if (hitResult != null) {
-                 val serializedHit = serializeHitResult(hitResult)
-                 notifyPlaneOrPointTap(listOf(serializedHit))
+        sceneView.onTapGesture = { motionEvent, hitResult ->
+            // The hitResult from onTapGesture can be a Node or an AR HitResult.
+            // We are only interested in AR HitResults.
+            if (hitResult is HitResult) {
+                val serializedHit = serializeHitResult(hitResult)
+                notifyPlaneOrPointTap(listOf(serializedHit))
             }
         }
 
@@ -467,7 +469,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                planeRenderer.pointCloudNode?.isEnabled = argShowFeaturePoints
+                sceneView.planeRenderer.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
