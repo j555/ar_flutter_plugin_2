@@ -34,6 +34,7 @@ import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
 import io.github.sceneview.ar.scene.PlaneRenderer
+import io.github.sceneview.scene.PointCloudNode
 import io.github.sceneview.collision.HitResult as CollisionHitResult 
 import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
