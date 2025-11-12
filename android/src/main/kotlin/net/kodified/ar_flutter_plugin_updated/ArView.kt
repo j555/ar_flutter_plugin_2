@@ -516,7 +516,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                this.pointCloudNode?.isEnabled = argShowFeaturePoints
+                sceneView.pointCloud?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
