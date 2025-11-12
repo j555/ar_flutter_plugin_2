@@ -29,6 +29,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.arcore.PlaneHitResult
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
@@ -42,6 +43,8 @@ import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
 // FIXED: Wildcard import to get Mat4 class AND Mat4() constructor
 import dev.romainguy.kotlin.math.*
+import io.github.sceneview.SceneView
+import io.github.sceneview.HitResult
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
@@ -187,15 +190,26 @@ class ArView(
             }
         }
         
-        // This is the correct way to handle taps based on the SceneView documentation you provided.
-        sceneView.onTouchEvent = { e: MotionEvent, hitResult: io.github.sceneview.HitResult? ->
-            if (hitResult is io.github.sceneview.ar.arcore.PlaneHitResult) {
-                val serializedHit = serializeHitResult(hitResult.hitResult)
-                notifyPlaneOrPointTap(listOf(serializedHit))
-                true // Consume the event
-            } else {
-                false // Do not consume the event
+        sceneView.setOnTouchListener { event: MotionEvent, hitResult: HitResult? ->
+
+            // Guard‑clause: we only care about Plane hits
+            val planeHit = hitResult as? PlaneHitResult ?: run {
+                // Not a plane – let the view handle it normally
+                return@setOnTouchListener false
             }
+
+            // Serialize the underlying ARCore HitResult (adjust according to your util)
+            val serializedHit = serializeHitResult(planeHit.hitResult)
+
+            // Ensure we’re on the main/UI thread before talking to Flutter
+            runOnUiThread {
+                // Notify the Flutter side – adapt the method name / channel as needed
+                notifyPlaneOrPointTap(listOf(serializedHit))
+            }
+
+            // Return true if you want to *consume* the touch completely.
+            // Return false if you also want the default gesture handling (e.g., camera move).
+            true
         }
 
         sceneView.onTrackingFailureChanged = { reason ->
