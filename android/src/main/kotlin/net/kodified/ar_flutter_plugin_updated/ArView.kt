@@ -48,7 +48,6 @@ import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
-import io.github.sceneview.scene.ARSceneView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -190,15 +189,19 @@ class ArView(
             }
         }
         
-        sceneView.onTouchEvent = { motionEvent, arHitResult ->
+        sceneView.onTouchEvent = { motionEvent, collisionHitResult ->
 
-            // Bail out early if there is no hit at all
-            val hit = arHitResult ?: return@onTouchEvent false
+            // `collisionHitResult` is io.github.sceneview.collision.HitResult
+            // Pull out the raw ARCore HitResult (may be null)
+            val arHit: com.google.ar.core.HitResult? = collisionHitResult?.hitResult
 
-            // ----------------------------------------------------------
-            // Determine whether the hit landed on a TRACKING plane or point
-            // ----------------------------------------------------------
-            val isValidHit = when (val trackable = hit.trackable) {
+            // Bail out if there is no ARCore hit at all
+            if (arHit == null) return@onTouchEvent false
+
+            // -------------------------------------------------------------
+            // Determine whether the ARCore hit landed on a TRACKING plane or point
+            // -------------------------------------------------------------
+            val isValidHit = when (val trackable = arHit.trackable) {
                 is Plane -> trackable.trackingState == TrackingState.TRACKING
                 is Point -> trackable.trackingState == TrackingState.TRACKING
                 else     -> false
@@ -209,14 +212,14 @@ class ArView(
                 return@onTouchEvent false
             }
 
-            // ----------------------------------------------------------
-            // Serialize the raw ARCore HitResult (your existing helper works on it)
-            // ----------------------------------------------------------
-            val serializedHit = serializeHitResult(hit)
+            // -------------------------------------------------------------
+            // Serialize the raw ARCore HitResult (your helper expects this type)
+            // -------------------------------------------------------------
+            val serializedHit = serializeHitResult(arHit)
 
-            // ----------------------------------------------------------
+            // -------------------------------------------------------------
             // Send the result back to Flutter on the UI thread
-            // ----------------------------------------------------------
+            // -------------------------------------------------------------
             activity.runOnUiThread {
                 notifyPlaneOrPointTap(listOf(serializedHit))
             }
