@@ -157,7 +157,7 @@ class ArView(
     private fun setupSceneViewListeners() {
         
         sceneView.onSessionUpdated = { session, frame ->
-            if (isSessionPaused) return@onSessionUpdated
+            if (isSessionPaused) return@onSessionUpdated // This label is correct for the lambda
 
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedPlanes) {
@@ -187,13 +187,12 @@ class ArView(
             }
         }
         
-        sceneView.onTapListener = { motionEvent, node, hitResult ->
+        sceneView.onTap = { motionEvent, hitResult ->
             if (hitResult != null) {
                  val serializedHit = serializeHitResult(hitResult)
                  notifyPlaneOrPointTap(listOf(serializedHit))
             }
-        } 
-
+        }
 
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
@@ -408,10 +407,9 @@ class ArView(
                 )
 
                 // FIXED: This will resolve now
-                val hitResult = hitResults.firstOrNull {
-                    val trackable = it.trackable
-                    (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) ||
-                    (trackable is com.google.ar.core.Point && trackable.trackingState == com.google.ar.core.Point.TrackingState.TRACKING)
+                val hitResult = hitResults.firstOrNull { 
+                    val trackable = it.trackable 
+                    (trackable is Plane && trackable.trackingState == com.google.ar.core.TrackingState.TRACKING) || (trackable is com.google.ar.core.Point && trackable.trackingState == com.google.ar.core.Point.TrackingState.TRACKING)
                 }
                 
                 if (hitResult != null) {
@@ -469,7 +467,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                sceneView.pointCloudNode.isEnabled = argShowFeaturePoints
+                planeRenderer.pointCloudNode.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
@@ -558,7 +556,7 @@ class ArView(
                     }
 
                     node.apply {
-                        val newMatrix = Mat4(transform.map { it.toFloat() }.toFloatArray())
+                        val newMatrix = Mat4.of(*transform.map { it.toFloat() }.toFloatArray())
                         transform(newMatrix)
                     }
                     result.success(null)
