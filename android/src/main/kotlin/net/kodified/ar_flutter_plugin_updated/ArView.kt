@@ -201,7 +201,8 @@ class ArView(
             val arHit: com.google.ar.core.HitResult? =
                 collisionHitResult as? com.google.ar.core.HitResult
 
-            if (arHit == null) return@onTouchEvent false   // no hit → not consumed
+            // No hit at all → we did not consume the event
+            if (arHit == null) return@touchHandler false
 
             // -------------------------------------------------------------
             // Does the hit belong to a TRACKING plane or point?
@@ -214,7 +215,7 @@ class ArView(
 
             if (!isValidHit) {
                 // Not a plane/point we care about – let the view handle it
-                return@onTouchEvent false
+                return@touchHandler false
             }
 
             // -------------------------------------------------------------
