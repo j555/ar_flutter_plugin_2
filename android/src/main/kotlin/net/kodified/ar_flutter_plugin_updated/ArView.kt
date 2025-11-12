@@ -34,6 +34,7 @@ import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
 import io.github.sceneview.ar.scene.PlaneRenderer
+import io.github.sceneview.collision.HitResult as CollisionHitResult 
 import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
 import io.github.sceneview.loaders.MaterialLoader
@@ -189,17 +190,20 @@ class ArView(
             }
         }
         
-        sceneView.onTouchEvent = { motionEvent, collisionHitResult ->
+        sceneView.onTouchEvent = { motionEvent: MotionEvent,
+                               collisionHitResult: CollisionHitResult? ->
 
-            // `collisionHitResult` is io.github.sceneview.collision.HitResult
-            // Pull out the raw ARCore HitResult (may be null)
-            val arHit: com.google.ar.core.HitResult? = collisionHitResult?.hitResult
+            // -------------------------------------------------------------
+            // Extract the raw ARCore HitResult from the SceneView wrapper.
+            // `collisionHitResult?.hitResult` returns a com.google.ar.core.HitResult?
+            // -------------------------------------------------------------
+            val arHit: HitResult? = collisionHitResult?.hitResult
 
-            // Bail out if there is no ARCore hit at all
+            // Bail out early if the ARCore hit is null
             if (arHit == null) return@onTouchEvent false
 
             // -------------------------------------------------------------
-            // Determine whether the ARCore hit landed on a TRACKING plane or point
+            // Does the hit belong to a TRACKING plane or point?
             // -------------------------------------------------------------
             val isValidHit = when (val trackable = arHit.trackable) {
                 is Plane -> trackable.trackingState == TrackingState.TRACKING
@@ -208,12 +212,12 @@ class ArView(
             }
 
             if (!isValidHit) {
-                // Not a plane/point we care about – let the view handle the event
+                // Not a plane/point we care about – let the view handle it
                 return@onTouchEvent false
             }
 
             // -------------------------------------------------------------
-            // Serialize the raw ARCore HitResult (your helper expects this type)
+            // Serialize the ARCore HitResult (your existing helper expects this type)
             // -------------------------------------------------------------
             val serializedHit = serializeHitResult(arHit)
 
@@ -224,7 +228,7 @@ class ArView(
                 notifyPlaneOrPointTap(listOf(serializedHit))
             }
 
-            // We consumed the tap
+            // We have handled the tap → consume the event
             true
         }
 
