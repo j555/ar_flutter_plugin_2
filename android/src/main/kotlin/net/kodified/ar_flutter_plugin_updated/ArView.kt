@@ -187,11 +187,14 @@ class ArView(
             }
         }
         
-        sceneView.onTap = { motionEvent: MotionEvent, hitResult: HitResult? ->
-            if (hitResult != null) {
-                val serializedHit = serializeHitResult(hitResult)
+        sceneView.scene.onTap = { motionEvent, hitResult ->
+            // We are only interested in ARCore plane hits
+            if (hitResult is io.github.sceneview.ar.arcore.PlaneHitResult) {
+                val serializedHit = serializeHitResult(hitResult.hitResult)
                 notifyPlaneOrPointTap(listOf(serializedHit))
+                true // Consume the event
             }
+            false // Do not consume the event
         }
 
         sceneView.onTrackingFailureChanged = { reason ->
@@ -467,7 +470,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                pointCloudNode?.isEnabled = argShowFeaturePoints
+                sceneView.planeRenderer.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
