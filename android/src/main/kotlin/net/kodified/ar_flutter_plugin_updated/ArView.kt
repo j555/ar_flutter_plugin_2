@@ -191,16 +191,12 @@ class ArView(
         }
         
         sceneView.onTouchEvent = { motionEvent: MotionEvent,
-                               collisionHitResult: CollisionHitResult? ->
+                               arHitResult: HitResult? ->   // ← ARCore HitResult!
 
             // -------------------------------------------------------------
-            // Extract the raw ARCore HitResult from the SceneView wrapper.
-            // `collisionHitResult?.hitResult` returns a com.google.ar.core.HitResult?
+            // Bail out early if there is no hit at all
             // -------------------------------------------------------------
-            val arHit: HitResult? = collisionHitResult?.hitResult
-
-            // Bail out early if the ARCore hit is null
-            if (arHit == null) return@onTouchEvent false
+            val arHit = arHitResult ?: return@onTouchEvent false
 
             // -------------------------------------------------------------
             // Does the hit belong to a TRACKING plane or point?
@@ -217,7 +213,7 @@ class ArView(
             }
 
             // -------------------------------------------------------------
-            // Serialize the ARCore HitResult (your existing helper expects this type)
+            // Serialize the ARCore HitResult (your helper expects this type)
             // -------------------------------------------------------------
             val serializedHit = serializeHitResult(arHit)
 
@@ -228,7 +224,9 @@ class ArView(
                 notifyPlaneOrPointTap(listOf(serializedHit))
             }
 
+            // -------------------------------------------------------------
             // We have handled the tap → consume the event
+            // -------------------------------------------------------------
             true
         }
 
