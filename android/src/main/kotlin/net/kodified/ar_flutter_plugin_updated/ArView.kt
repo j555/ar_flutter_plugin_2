@@ -194,15 +194,15 @@ class ArView(
                                collisionHitResult: io.github.sceneview.collision.HitResult? ->
 
             // -------------------------------------------------------------
-            // The wrapper is a subclass of the ARCore HitResult.
-            // Cast it to the real ARCore type so we can use `trackable`,
-            // `pose`, etc.  If the cast fails we bail out.
+            // The collision wrapper inherits from the ARCore HitResult.
+            // Cast it to the real ARCore type so we can inspect
+            // `trackable`, `pose`, etc.
             // -------------------------------------------------------------
             val arHit: com.google.ar.core.HitResult? =
                 collisionHitResult as? com.google.ar.core.HitResult
 
-            // No hit at all → we did not consume the event
-            if (arHit == null) return@touchHandler false
+            // No hit at all → we did **not** consume the event
+            if (arHit == null) return false
 
             // -------------------------------------------------------------
             // Does the hit belong to a TRACKING plane or point?
@@ -214,8 +214,8 @@ class ArView(
             }
 
             if (!isValidHit) {
-                // Not a plane/point we care about – let the view handle it
-                return@touchHandler false
+                // Not a plane/point we care about → let the view handle it
+                return false
             }
 
             // -------------------------------------------------------------
