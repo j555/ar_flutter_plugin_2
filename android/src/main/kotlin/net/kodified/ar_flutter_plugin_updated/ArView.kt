@@ -189,10 +189,8 @@ class ArView(
         
         // This is the correct way to handle taps based on the SceneView documentation you provided.
         sceneView.onTouchEvent = { e: MotionEvent, hitResult: io.github.sceneview.HitResult? ->
-            // We are only interested in ARCore HitResults, not Node hits
-            if (hitResult?.isAR == true) {
-                val arHitResult = hitResult.arHitResult!!
-                val serializedHit = serializeHitResult(arHitResult)
+            if (hitResult is io.github.sceneview.ar.arcore.PlaneHitResult) {
+                val serializedHit = serializeHitResult(hitResult.hitResult)
                 notifyPlaneOrPointTap(listOf(serializedHit))
                 true // Consume the event
             } else {
@@ -473,7 +471,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                pointCloudNode?.isEnabled = argShowFeaturePoints
+                this.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
