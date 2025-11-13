@@ -1,5 +1,9 @@
 package net.kodified.ar_flutter_plugin_updated
 
+// ---------------------------------------------------------------------------
+// Imports – everything you already had, plus the few extras needed for the
+// point‑cloud implementation.
+// ---------------------------------------------------------------------------
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
@@ -13,14 +17,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
-import com.google.ar.core.Anchor
-import com.google.ar.core.Anchor.CloudAnchorState
-import com.google.ar.core.Config
-import com.google.ar.core.HitResult
-import com.google.ar.core.Plane
-import com.google.ar.core.Point
-import com.google.ar.core.Pose
-import com.google.ar.core.TrackingState
+import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeHitResult
@@ -29,12 +26,12 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
-import io.github.sceneview.ar.ARSceneView    
+import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
 import io.github.sceneview.ar.scene.PlaneRenderer
-import io.github.sceneview.collision.HitResult as CollisionHitResult 
+import io.github.sceneview.collision.HitResult as CollisionHitResult
 import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
 import io.github.sceneview.loaders.MaterialLoader
@@ -42,7 +39,6 @@ import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
-// FIXED: Wildcard import to get Mat4 class AND Mat4() constructor
 import dev.romainguy.kotlin.math.*
 import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
@@ -53,7 +49,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.FloatBuffer
+import java.nio.IntBuffer
 
+// ---------------------------------------------------------------------------
+// Main class – unchanged except for the point‑cloud handling
+// ---------------------------------------------------------------------------
 class ArView(
     context: Context,
     private val activity: Activity,
@@ -61,84 +62,106 @@ class ArView(
     messenger: BinaryMessenger,
     id: Int,
 ) : PlatformView {
+
+    // -----------------------------------------------------------------------
+    // Basic fields
+    // -----------------------------------------------------------------------
     private val TAG: String = ArView::class.java.name
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
     private var worldOriginNode: Node? = null
 
+    // -----------------------------------------------------------------------
+    // UI containers & method channels
+    // -----------------------------------------------------------------------
     private val rootLayout: ViewGroup = FrameLayout(context)
 
-    private val sessionChannel: MethodChannel = MethodChannel(messenger, "arsession_$id")
-    private val objectChannel: MethodChannel = MethodChannel(messenger, "arobjects_$id")
-    private val anchorChannel: MethodChannel = MethodChannel(messenger, "aranchors_$id")
+    private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    private val objectChannel = MethodChannel(messenger, "arobjects_$id")
+    private val anchorChannel = MethodChannel(messenger, "aranchors_$id")
 
+    // -----------------------------------------------------------------------
+    // Runtime maps & flags
+    // -----------------------------------------------------------------------
     private val nodesMap = mutableMapOf<String, ModelNode>()
     private val anchorNodesMap = mutableMapOf<String, AnchorNode>()
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
-    
+
     private val detectedPlanes = mutableSetOf<Plane>()
 
-    private val onSessionMethodCall =
-        MethodChannel.MethodCallHandler { call, result ->
-            when (call.method) {
-                "init" -> handleInit(call, result)
-                "showPlanes" -> handleShowPlanes(call, result)
-                "dispose" -> dispose()
-                "getAnchorPose" -> handleGetAnchorPose(call, result)
-                "getCameraPose" -> handleGetCameraPose(result)
-                "getProjectionMatrix" -> handleGetProjectionMatrix(result)
-                "snapshot" -> handleSnapshot(result)
-                "disableCamera" -> handleDisableCamera(result)
-                "enableCamera" -> handleEnableCamera(result)
-                else -> result.notImplemented()
-            }
-        }
-    
-    private val onObjectMethodCall =
-        MethodChannel.MethodCallHandler { call, result ->
-            when (call.method) {
-                "addNode" -> {
-                    val nodeData = call.arguments as? Map<String, Any>
-                    nodeData?.let {
-                        handleAddNode(it, result)
-                    } ?: result.error("INVALID_ARGUMENTS", "Node data is required", null)
-                }
-                "addNodeToPlaneAnchor" -> handleAddNodeToPlaneAnchor(call, result)
-                "addNodeToScreenPosition" -> handleAddNodeToScreenPosition(call, result)
-                "removeNode" -> {
-                    handleRemoveNode(call, result)
-                }
-                "transformationChanged" -> {
-                    handleTransformNode(call, result)
-                }
-                else -> result.notImplemented()
-            }
-        }
+    // -----------------------------------------------------------------------
+    // Point‑cloud specific fields
+    // -----------------------------------------------------------------------
+    /** Pool of reusable ModelInstance objects – one per possible point. */
+    private var pointCloudModelInstances = mutableListOf<ModelInstance>()
+    /** Active point‑cloud nodes currently attached to the scene. */
+    private val pointCloudNodes = mutableListOf<PointCloudNode>()
+    /** Last processed point‑cloud timestamp – prevents duplicate work. */
+    private var lastPointCloudTimestamp: Long? = null
+    /** Optional filter – only show points with confidence ≥ this value. */
+    private var minConfidence = 0.1f
+    /** Maximum number of points we will render at once. */
+    private var maxPoints = 500
 
-    private val onAnchorMethodCall =
-        MethodChannel.MethodCallHandler { call, result ->
-            when (call.method) {
-                "addAnchor" -> handleAddAnchor(call, result)
-                "removeAnchor" -> {
-                    val anchorName = call.argument<String>("name")
-                    handleRemoveAnchor(anchorName, result)
-                }
-                "initGoogleCloudAnchorMode" -> handleInitGoogleCloudAnchorMode(result)
-                "uploadAnchor" -> handleUploadAnchor(call, result)
-                "downloadAnchor" -> handleDownloadAnchor(call, result)
-                else -> result.notImplemented()
-            }
+    // -----------------------------------------------------------------------
+    // Method‑call handlers (unchanged)
+    // -----------------------------------------------------------------------
+    private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        when (call.method) {
+            "init" -> handleInit(call, result)
+            "showPlanes" -> handleShowPlanes(call, result)
+            "dispose" -> dispose()
+            "getAnchorPose" -> handleGetAnchorPose(call, result)
+            "getCameraPose" -> handleGetCameraPose(result)
+            "getProjectionMatrix" -> handleGetProjectionMatrix(result)
+            "snapshot" -> handleSnapshot(result)
+            "disableCamera" -> handleDisableCamera(result)
+            "enableCamera" -> handleEnableCamera(result)
+            else -> result.notImplemented()
         }
+    }
 
+    private val onObjectMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        when (call.method) {
+            "addNode" -> {
+                val nodeData = call.arguments as? Map<String, Any>
+                nodeData?.let { handleAddNode(it, result) }
+                    ?: result.error("INVALID_ARGUMENTS", "Node data is required", null)
+            }
+            "addNodeToPlaneAnchor" -> handleAddNodeToPlaneAnchor(call, result)
+            "addNodeToScreenPosition" -> handleAddNodeToScreenPosition(call, result)
+            "removeNode" -> handleRemoveNode(call, result)
+            "transformationChanged" -> handleTransformNode(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private val onAnchorMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        when (call.method) {
+            "addAnchor" -> handleAddAnchor(call, result)
+            "removeAnchor" -> {
+                val anchorName = call.argument<String>("name")
+                handleRemoveAnchor(anchorName, result)
+            }
+            "initGoogleCloudAnchorMode" -> handleInitGoogleCloudAnchorMode(result)
+            "uploadAnchor" -> handleUploadAnchor(call, result)
+            "downloadAnchor" -> handleDownloadAnchor(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Init – create the ARSceneView and hook listeners
+    // -----------------------------------------------------------------------
     init {
         sceneView = ARSceneView(
             context = viewContext,
             sharedLifecycle = lifecycle,
             sessionConfiguration = { session, config ->
-                 config.apply {
+                config.apply {
                     planeFindingMode = Config.PlaneFindingMode.DISABLED
                     depthMode = Config.DepthMode.DISABLED
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
@@ -147,15 +170,20 @@ class ArView(
                 }
             }
         )
-        
+
         rootLayout.addView(sceneView)
 
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
-        
+
         setupSceneViewListeners()
     }
+
+    // -----------------------------------------------------------------------
+    // Listener registration – the only part that changed is the point‑cloud
+    // handling inside `onSessionUpdated`.
+    // -----------------------------------------------------------------------
 
     private fun setupSceneViewListeners() {
 
