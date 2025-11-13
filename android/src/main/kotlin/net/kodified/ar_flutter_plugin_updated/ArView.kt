@@ -158,98 +158,182 @@ class ArView(
     }
 
     private fun setupSceneViewListeners() {
-        
+
+        // ------------------- Plane tracking (unchanged) -------------------
         sceneView.onSessionUpdated = { session, frame ->
             if (!isSessionPaused) {
+                // ---- Plane handling (your original code) ----
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
                 for (plane in updatedPlanes) {
-                    if (plane.trackingState == TrackingState.TRACKING && !detectedPlanes.contains(plane)) {
-                        detectedPlanes.add(plane)
-                        rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
-                            rootLayout.removeView(it)
+                    when (plane.trackingState) {
+                        TrackingState.TRACKING -> {
+                            if (!detectedPlanes.contains(plane)) {
+                                detectedPlanes.add(plane)
+                                rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
+                                    rootLayout.removeView(it)
+                                }
+                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                                mainScope.launch {
+                                    sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                                }
+                            } else {
+                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                                mainScope.launch {
+                                    sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                                }
+                            }
                         }
-                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                        mainScope.launch {
-                            sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                        TrackingState.STOPPED -> {
+                            if (detectedPlanes.contains(plane)) {
+                                detectedPlanes.remove(plane)
+                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                                mainScope.launch {
+                                    sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                                }
+                            }
                         }
-                    }
-                    else if (plane.trackingState == TrackingState.TRACKING && detectedPlanes.contains(plane)) {
-                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                        mainScope.launch {
-                            sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
-                        }
-                    } 
-                    else if (plane.trackingState == TrackingState.STOPPED && detectedPlanes.contains(plane)) {
-                        detectedPlanes.remove(plane)
-                        val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                        mainScope.launch {
-                            sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
-                        }
+                        else -> { /* ignore */ }
                     }
                 }
+
+                // ------------------- Point‑cloud handling -------------------
+                // Throttle to ~10 fps (adjust if you wish)
+                if (frame.fps(lastPointCloudFrame) < 10) return@onSessionUpdated
+
+                val pointCloud = frame.acquirePointCloud()
+                // Skip duplicate timestamps
+                if (pointCloud.timestamp == lastPointCloudTimestamp) {
+                    pointCloud.release()
+                    return@onSessionUpdated
+                }
+
+                lastPointCloudTimestamp = pointCloud.timestamp
+                lastPointCloudFrame = frame
+
+                // Buffers supplied by ARCore
+                val ids: IntBuffer = pointCloud.ids
+                val points: FloatBuffer = pointCloud.points
+
+                // ---------------------------------------------------------
+                // 1️⃣ Remove nodes whose IDs are no longer present
+                // ---------------------------------------------------------
+                val currentIds = (0 until ids.limit()).map { ids[it] }.toSet()
+                pointCloudNodes.filter { it.id !in currentIds }.forEach { removePointCloudNode(it) }
+
+                // ---------------------------------------------------------
+                // 2️⃣ Add new points / update existing ones
+                // ---------------------------------------------------------
+                for (i in 0 until ids.limit()) {
+                    val id = ids[i]
+
+                    // Update existing node if we already have it
+                    val existing = pointCloudNodes.firstOrNull { it.id == id }
+                    if (existing != null) {
+                        val pIdx = i * 4
+                        existing.worldPosition = Position(
+                            points[pIdx],
+                            points[pIdx + 1],
+                            points[pIdx + 2]
+                        )
+                        existing.confidence = points[pIdx + 3]
+                        continue
+                    }
+
+                    // Respect max‑points limit
+                    if (pointCloudNodes.size >= maxPoints) break
+
+                    // Apply confidence filter (optional UI can change `minConfidence`)
+                    val confidence = points[i * 4 + 3]
+                    if (confidence < minConfidence) continue
+
+                    // Get a ModelInstance from the pool (creates pool lazily)
+                    val modelInst = getPointCloudModelInstance() ?: break
+
+                    val pIdx = i * 4
+                    val position = Position(
+                        points[pIdx],
+                        points[pIdx + 1],
+                        points[pIdx + 2]
+                    )
+                    val node = PointCloudNode(modelInst, id, confidence).apply {
+                        this.position = position
+                    }
+                    pointCloudNodes += node
+                    sceneView.addChildNode(node)
+                }
+
+                pointCloud.release()
             }
         }
-        
+
+        // ------------------- Tap handling (unchanged) -------------------
         sceneView.onTouchEvent = { motionEvent: MotionEvent,
-                               collisionHitResult: io.github.sceneview.collision.HitResult? ->
+                                   collisionHitResult: io.github.sceneview.collision.HitResult? ->
 
-            // -------------------------------------------------------------
             // The collision wrapper inherits from the ARCore HitResult.
-            // Cast it to the real ARCore type so we can inspect
-            // `trackable`, `pose`, etc.
-            // -------------------------------------------------------------
-            val arHit: com.google.ar.core.HitResult? =
-                collisionHitResult as? com.google.ar.core.HitResult
+            val arHit: HitResult? = collisionHitResult as? HitResult
 
-            // -------------------------------------------------------------
-            // Build the Boolean result *as the last expression* of the lambda.
-            // No `return` statements are used, so the compiler sees the
-            // correct return type (Boolean).
-            // -------------------------------------------------------------
+            // Expression‑style return – no labelled returns needed.
             if (arHit == null) {
-                // No hit → we did NOT consume the event
                 false
             } else {
-                // ---------------------------------------------------------
-                // Does the hit belong to a TRACKING plane or point?
-                // ---------------------------------------------------------
                 val isValidHit = when (val trackable = arHit.trackable) {
                     is Plane -> trackable.trackingState == TrackingState.TRACKING
                     is Point -> trackable.trackingState == TrackingState.TRACKING
-                    else     -> false
+                    else -> false
                 }
 
                 if (!isValidHit) {
-                    // Not a plane/point we care about → let the view handle it
                     false
                 } else {
-                    // -----------------------------------------------------
-                    // Serialize the ARCore HitResult (your helper expects this type)
-                    // -----------------------------------------------------
                     val serializedHit = serializeHitResult(arHit)
-
-                    // -----------------------------------------------------
-                    // Send the result back to Flutter on the UI thread
-                    // -----------------------------------------------------
                     activity.runOnUiThread {
                         notifyPlaneOrPointTap(listOf(serializedHit))
                     }
-
-                    // -----------------------------------------------------
-                    // We have handled the tap → consume the event
-                    // -----------------------------------------------------
                     true
                 }
             }
         }
 
+        // ------------------- Tracking‑failure callback (unchanged) -------------------
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
                 sessionChannel.invokeMethod("onTrackingFailure", reason?.name)
             }
         }
     }
-    
+
+    // -----------------------------------------------------------------------
+    // Helper to lazily create / reuse a ModelInstance for the point‑cloud dots
+    // -----------------------------------------------------------------------
+    private fun getPointCloudModelInstance(): ModelInstance? {
+        // Load the pool the first time we need it.
+        if (pointCloudModelInstances.isEmpty()) {
+            // The GLB must contain a tiny geometry (sphere/quad). The sample uses
+            //   assets/models/point_cloud.glb
+            pointCloudModelInstances = sceneView.modelLoader.createInstancedModel(
+                assetFileLocation = "models/point_cloud.glb",
+                count = maxPoints
+            ).toMutableList()
+        }
+        return pointCloudModelInstances.removeLastOrNull()
+    }
+
+    // -----------------------------------------------------------------------
+    // Remove a point‑cloud node and recycle its ModelInstance back to the pool
+    // -----------------------------------------------------------------------
+    private fun removePointCloudNode(node: PointCloudNode) {
+        pointCloudNodes.remove(node)
+        sceneView.removeChildNode(node)
+        node.destroy()
+        // Return the ModelInstance so it can be reused later
+        pointCloudModelInstances.add(node.modelInstance)
+    }
+
+    // -----------------------------------------------------------------------
+    // The rest of your original code – unchanged except for the removal of the
+    // invalid `scene?.pointCloud` line in `handleInit`.
+    // -----------------------------------------------------------------------
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
         try {
             val projectionMatrix = sceneView.cameraNode.projectionTransform?.toMatrix()?.data
@@ -257,7 +341,7 @@ class ArView(
                 val matrixData = projectionMatrix.map { it.toDouble() }
                 result.success(matrixData)
             } else {
-                 result.error("CAMERA_NOT_READY", "Camera projection matrix is not available yet.", null)
+                result.error("CAMERA_NOT_READY", "Camera projection matrix is not available yet.", null)
             }
         } catch (e: Exception) {
             result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
@@ -273,6 +357,7 @@ class ArView(
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
         }
     }
+
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
