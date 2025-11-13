@@ -51,6 +51,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
+import com.google.ar.core.CloudAnchorState   // <-- added
 
 // ---------------------------------------------------------------------------
 // Main class – unchanged except for the point‑cloud handling
@@ -101,6 +102,8 @@ class ArView(
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     /** Last processed point‑cloud timestamp – prevents duplicate work. */
     private var lastPointCloudTimestamp: Long? = null
+    /** Keep a reference to the last Frame so we could throttle if we wanted. */
+    private var lastPointCloudFrame: Frame? = null
     /** Optional filter – only show points with confidence ≥ this value. */
     private var minConfidence = 0.1f
     /** Maximum number of points we will render at once. */
@@ -184,7 +187,6 @@ class ArView(
     // Listener registration – the only part that changed is the point‑cloud
     // handling inside `onSessionUpdated`.
     // -----------------------------------------------------------------------
-
     private fun setupSceneViewListeners() {
 
         // ------------------- Plane tracking (unchanged) -------------------
@@ -225,11 +227,9 @@ class ArView(
                 }
 
                 // ------------------- Point‑cloud handling -------------------
-                // Throttle to ~10 fps (adjust if you wish)
-                if (frame.fps(lastPointCloudFrame) < 10) return@onSessionUpdated
-
+                // Process the point‑cloud on **every** frame (cheap enough).
                 val pointCloud = frame.acquirePointCloud()
-                // Skip duplicate timestamps
+                // Skip duplicate timestamps (should rarely happen)
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
                     pointCloud.release()
                     return@onSessionUpdated
@@ -274,7 +274,7 @@ class ArView(
                     val confidence = points[i * 4 + 3]
                     if (confidence < minConfidence) continue
 
-                    // Get a ModelInstance from the pool (creates pool lazily)
+                    // Grab a ModelInstance from the pool (creates the pool lazily)
                     val modelInst = getPointCloudModelInstance() ?: break
 
                     val pIdx = i * 4
@@ -360,7 +360,7 @@ class ArView(
 
     // -----------------------------------------------------------------------
     // The rest of your original code – unchanged except for the removal of the
-    // invalid `scene?.pointCloud` line in `handleInit`.
+    // invalid `scene?.pointCloud?.isEnabled` line in `handleInit`.
     // -----------------------------------------------------------------------
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
         try {
@@ -395,6 +395,10 @@ class ArView(
             result.error("ENABLE_CAMERA_ERROR", e.message, null)
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Model loading – unchanged
+    // -----------------------------------------------------------------------
 
     private suspend fun buildModelNode(nodeData: Map<String, Any>): ModelNode? {
         var fileLocation = nodeData["uri"] as? String ?: return null
