@@ -52,7 +52,6 @@ import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import com.google.ar.core.CloudAnchorState   // <-- added
-
 // ---------------------------------------------------------------------------
 // Main class – unchanged except for the point‑cloud handling
 // ---------------------------------------------------------------------------
@@ -232,7 +231,7 @@ class ArView(
                 // Skip duplicate timestamps (should rarely happen)
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
                     pointCloud.release()
-                    return@onSessionUpdated
+                    return@onSessionUpdated // This will be removed, but keeping it to show the original location
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
@@ -633,8 +632,8 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                sceneView.scene?.pointCloud?.isEnabled = argShowFeaturePoints
-                
+                // The correct way to show feature points now is via session config
+                // This is handled by setting pointCloudMode in the config
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
                         LayoutInflater
@@ -764,7 +763,7 @@ class ArView(
 
             val cloudAnchorNode = CloudAnchorNode(sceneView.engine, anchor)
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
-                if (state == CloudAnchorState.SUCCESS && cloudAnchorId != null) {
+                if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
                     result.success(cloudAnchorId)
                 } else {
                     result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
@@ -1050,8 +1049,8 @@ class ArView(
             Log.d(TAG, "☁️ Début de l'hébergement de l'ancre cloud...")
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
                 Log.d(TAG, "📡 État de l'hébergement: $state, ID: $cloudAnchorId")
-                mainScope.launch {
-                    if (state == CloudAnchorState.SUCCESS && cloudAnchorId != null) {
+                mainScope.launch { // Use Anchor.CloudAnchorState
+                    if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
                         Log.d(TAG, "✅ Ancre cloud hébergée avec succès: $cloudAnchorId")
                         val args = mapOf(
                             "name" to anchorName,
