@@ -52,7 +52,6 @@ import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import com.google.ar.core.CloudAnchorState   // <-- added
-
 // ---------------------------------------------------------------------------
 // Main class – unchanged except for the point‑cloud handling
 // ---------------------------------------------------------------------------
@@ -191,58 +190,9 @@ class ArView(
 
         // ------------------- Plane tracking (unchanged) -------------------
         sceneView.onSessionUpdated = { session, frame ->
-            if (!isSessionPaused) {
-                // ---- Plane handling (your original code) ----
-                val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
-                for (plane in updatedPlanes) {
-                    when (plane.trackingState) {
-                        TrackingState.TRACKING -> {
-                            if (!detectedPlanes.contains(plane)) {
-                                detectedPlanes.add(plane)
-                                rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
-                                    rootLayout.removeView(it)
-                                }
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                                mainScope.launch {
-                                    sessionChannel.invokeMethod("onPlaneDetected", planeMap)
-                                }
-                            } else {
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                                mainScope.launch {
-                                    sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
-                                }
-                            }
-                        }
-                        TrackingState.STOPPED -> {
-                            if (detectedPlanes.contains(plane)) {
-                                detectedPlanes.remove(plane)
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
-                                mainScope.launch {
-                                    sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
-                                }
-                            }
-                        }
-                        else -> { /* ignore */ }
-                    }
-                }
+            }
 
-                // ------------------- Point‑cloud handling -------------------
-                // Process the point‑cloud on **every** frame (cheap enough).
-                val pointCloud = frame.acquirePointCloud()
-                // Skip duplicate timestamps (should rarely happen)
-                if (pointCloud.timestamp == lastPointCloudTimestamp) {
-                    pointCloud.release()
-                    return@onSessionUpdated
-                }
-
-                lastPointCloudTimestamp = pointCloud.timestamp
-                lastPointCloudFrame = frame
-
-                // Buffers supplied by ARCore
-                val ids: IntBuffer = pointCloud.ids
-                val points: FloatBuffer = pointCloud.points
-
-                // ---------------------------------------------------------
+            lastPoin                // ---------------------------------------------------------
                 // 1️⃣ Remove nodes whose IDs are no longer present
                 // ---------------------------------------------------------
                 val currentIds = (0 until ids.limit()).map { ids[it] }.toSet()
@@ -290,8 +240,7 @@ class ArView(
                     sceneView.addChildNode(node)
                 }
 
-                pointCloud.release()
-            }
+            pointCloud.release()
         }
 
         // ------------------- Tap handling (unchanged) -------------------
@@ -633,7 +582,7 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                sceneView.scene?.pointCloud?.isEnabled = argShowFeaturePoints
+                sceneView.pointCloudNode?.isEnabled = argShowFeaturePoints
                 
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
@@ -764,7 +713,7 @@ class ArView(
 
             val cloudAnchorNode = CloudAnchorNode(sceneView.engine, anchor)
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
-                if (state == CloudAnchorState.SUCCESS && cloudAnchorId != null) {
+                if (state == io.github.sceneview.ar.node.CloudAnchorNode.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
                     result.success(cloudAnchorId)
                 } else {
                     result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
@@ -1051,7 +1000,7 @@ class ArView(
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
                 Log.d(TAG, "📡 État de l'hébergement: $state, ID: $cloudAnchorId")
                 mainScope.launch {
-                    if (state == CloudAnchorState.SUCCESS && cloudAnchorId != null) {
+                    if (state == io.github.sceneview.ar.node.CloudAnchorNode.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
                         Log.d(TAG, "✅ Ancre cloud hébergée avec succès: $cloudAnchorId")
                         val args = mapOf(
                             "name" to anchorName,
