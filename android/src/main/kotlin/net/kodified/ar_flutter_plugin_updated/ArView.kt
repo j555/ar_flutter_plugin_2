@@ -51,7 +51,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-import com.google.ar.core.CloudAnchorState   // <-- added
 // ---------------------------------------------------------------------------
 // Main class – unchanged except for the point‑cloud handling
 // ---------------------------------------------------------------------------
@@ -231,7 +230,7 @@ class ArView(
                 // Skip duplicate timestamps (should rarely happen)
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
                     pointCloud.release()
-                    return@onSessionUpdated // This will be removed, but keeping it to show the original location
+                    return@onSessionUpdated
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
