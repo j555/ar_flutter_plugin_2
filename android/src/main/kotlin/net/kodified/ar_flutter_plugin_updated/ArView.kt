@@ -188,7 +188,7 @@ class ArView(
     private fun setupSceneViewListeners() {
 
         // ------------------- Plane tracking (unchanged) -------------------
-        sceneView.onSessionUpdated = { session, frame ->
+        sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused) {
                 // ---- Plane handling (your original code) ----
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -230,7 +230,7 @@ class ArView(
                 // Skip duplicate timestamps (should rarely happen)
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
                     pointCloud.release()
-                    return@onSessionUpdated
+                    return@sessionUpdated
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
