@@ -817,6 +817,11 @@ class ArView(
              result.error("VIEW_DESTROYED", "ArView is disposed", null)
              return
         }
+        // FIX: Guard against 0 size (causes PixelCopy crash/hang)
+        if (sceneView.width <= 0 || sceneView.height <= 0) {
+             result.error("SNAPSHOT_ERROR", "View has invalid dimensions", null)
+             return
+        }
         try {
             mainScope.launch {
                 withContext(Dispatchers.Main) {
