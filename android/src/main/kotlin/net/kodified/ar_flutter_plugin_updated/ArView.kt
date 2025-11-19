@@ -1,8 +1,7 @@
 package net.kodified.ar_flutter_plugin_updated
 
 // ---------------------------------------------------------------------------
-// Imports – everything you already had, plus the few extras needed for the
-// point‑cloud implementation.
+// Imports 
 // ---------------------------------------------------------------------------
 import android.app.Activity
 import android.content.Context
@@ -51,9 +50,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-// ---------------------------------------------------------------------------
-// Main class – unchanged except for the point‑cloud handling
-// ---------------------------------------------------------------------------
+
 class ArView(
     context: Context,
     private val activity: Activity,
@@ -62,54 +59,39 @@ class ArView(
     id: Int,
 ) : PlatformView {
 
-    // -----------------------------------------------------------------------
-    // Basic fields
-    // -----------------------------------------------------------------------
     private val TAG: String = ArView::class.java.name
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
     private var worldOriginNode: Node? = null
 
-    // -----------------------------------------------------------------------
-    // UI containers & method channels
-    // -----------------------------------------------------------------------
     private val rootLayout: ViewGroup = FrameLayout(context)
 
     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
     private val objectChannel = MethodChannel(messenger, "arobjects_$id")
     private val anchorChannel = MethodChannel(messenger, "aranchors_$id")
 
-    // -----------------------------------------------------------------------
-    // Runtime maps & flags
-    // -----------------------------------------------------------------------
     private val nodesMap = mutableMapOf<String, ModelNode>()
     private val anchorNodesMap = mutableMapOf<String, AnchorNode>()
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
+    
+    // --- FIX: Add destruction flag to prevent native crashes ---
+    private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
 
-    // -----------------------------------------------------------------------
     // Point‑cloud specific fields
-    // -----------------------------------------------------------------------
-    /** Pool of reusable ModelInstance objects – one per possible point. */
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
-    /** Active point‑cloud nodes currently attached to the scene. */
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
-    /** Last processed point‑cloud timestamp – prevents duplicate work. */
     private var lastPointCloudTimestamp: Long? = null
-    /** Keep a reference to the last Frame so we could throttle if we wanted. */
     private var lastPointCloudFrame: Frame? = null
-    /** Optional filter – only show points with confidence ≥ this value. */
     private var minConfidence = 0.1f
-    /** Maximum number of points we will render at once. */
     private var maxPoints = 500
+    // Optimization: Process point cloud every N frames to reduce load
+    private var frameCounter = 0
 
-    // -----------------------------------------------------------------------
-    // Method‑call handlers (unchanged)
-    // -----------------------------------------------------------------------
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         when (call.method) {
             "init" -> handleInit(call, result)
@@ -154,9 +136,6 @@ class ArView(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Init – create the ARSceneView and hook listeners
-    // -----------------------------------------------------------------------
     init {
         sceneView = ARSceneView(
             context = viewContext,
@@ -181,16 +160,9 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // -----------------------------------------------------------------------
-    // Listener registration – the only part that changed is the point‑cloud
-    // handling inside `onSessionUpdated`.
-    // -----------------------------------------------------------------------
     private fun setupSceneViewListeners() {
-
-        // ------------------- Plane tracking (unchanged) -------------------
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
-            if (!isSessionPaused) {
-                // ---- Plane handling (your original code) ----
+            if (!isSessionPaused && !isDestroyed) {
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
                 for (plane in updatedPlanes) {
                     when (plane.trackingState) {
@@ -225,9 +197,13 @@ class ArView(
                 }
 
                 // ------------------- Point‑cloud handling -------------------
-                // Process the point‑cloud on **every** frame (cheap enough).
+                // Fix: Throttle updates to every 3rd frame to reduce buffer contention
+                frameCounter++
+                if (frameCounter % 3 != 0) {
+                    return@sessionUpdated
+                }
+
                 val pointCloud = frame.acquirePointCloud()
-                // Skip duplicate timestamps (should rarely happen)
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
                     pointCloud.release()
                     return@sessionUpdated
@@ -236,23 +212,14 @@ class ArView(
                 lastPointCloudTimestamp = pointCloud.timestamp
                 lastPointCloudFrame = frame
 
-                // Buffers supplied by ARCore
                 val ids: IntBuffer = pointCloud.ids
                 val points: FloatBuffer = pointCloud.points
 
-                // ---------------------------------------------------------
-                // 1️⃣ Remove nodes whose IDs are no longer present
-                // ---------------------------------------------------------
                 val currentIds = (0 until ids.limit()).map { ids[it] }.toSet()
                 pointCloudNodes.filter { it.id !in currentIds }.forEach { removePointCloudNode(it) }
 
-                // ---------------------------------------------------------
-                // 2️⃣ Add new points / update existing ones
-                // ---------------------------------------------------------
                 for (i in 0 until ids.limit()) {
                     val id = ids[i]
-
-                    // Update existing node if we already have it
                     val existing = pointCloudNodes.firstOrNull { it.id == id }
                     if (existing != null) {
                         val pIdx = i * 4
@@ -265,14 +232,11 @@ class ArView(
                         continue
                     }
 
-                    // Respect max‑points limit
                     if (pointCloudNodes.size >= maxPoints) break
 
-                    // Apply confidence filter (optional UI can change `minConfidence`)
                     val confidence = points[i * 4 + 3]
                     if (confidence < minConfidence) continue
 
-                    // Grab a ModelInstance from the pool (creates the pool lazily)
                     val modelInst = getPointCloudModelInstance() ?: break
 
                     val pIdx = i * 4
@@ -292,14 +256,9 @@ class ArView(
             }
         }
 
-        // ------------------- Tap handling (unchanged) -------------------
         sceneView.onTouchEvent = { motionEvent: MotionEvent,
                                    collisionHitResult: io.github.sceneview.collision.HitResult? ->
-
-            // The collision wrapper inherits from the ARCore HitResult.
             val arHit: HitResult? = collisionHitResult as? HitResult
-
-            // Expression‑style return – no labelled returns needed.
             if (arHit == null) {
                 false
             } else {
@@ -321,7 +280,6 @@ class ArView(
             }
         }
 
-        // ------------------- Tracking‑failure callback (unchanged) -------------------
         sceneView.onTrackingFailureChanged = { reason ->
             mainScope.launch {
                 sessionChannel.invokeMethod("onTrackingFailure", reason?.name)
@@ -329,14 +287,8 @@ class ArView(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Helper to lazily create / reuse a ModelInstance for the point‑cloud dots
-    // -----------------------------------------------------------------------
     private fun getPointCloudModelInstance(): ModelInstance? {
-        // Load the pool the first time we need it.
         if (pointCloudModelInstances.isEmpty()) {
-            // The GLB must contain a tiny geometry (sphere/quad). The sample uses
-            //   assets/models/point_cloud.glb
             pointCloudModelInstances = sceneView.modelLoader.createInstancedModel(
                 assetFileLocation = "models/point_cloud.glb",
                 count = maxPoints
@@ -345,22 +297,19 @@ class ArView(
         return pointCloudModelInstances.removeLastOrNull()
     }
 
-    // -----------------------------------------------------------------------
-    // Remove a point‑cloud node and recycle its ModelInstance back to the pool
-    // -----------------------------------------------------------------------
     private fun removePointCloudNode(node: PointCloudNode) {
         pointCloudNodes.remove(node)
         sceneView.removeChildNode(node)
         node.destroy()
-        // Return the ModelInstance so it can be reused later
         pointCloudModelInstances.add(node.modelInstance)
     }
 
-    // -----------------------------------------------------------------------
-    // The rest of your original code – unchanged except for the removal of the
-    // invalid `scene?.pointCloud?.isEnabled` line in `handleInit`.
-    // -----------------------------------------------------------------------
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+        // Fix: Guard against destroyed view
+        if (isDestroyed) {
+            result.error("VIEW_DESTROYED", "ArView is disposed", null)
+            return
+        }
         try {
             val projectionMatrix = sceneView.cameraNode.projectionTransform?.toMatrix()?.data
             if (projectionMatrix != null) {
@@ -394,39 +343,25 @@ class ArView(
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Model loading – unchanged
-    // -----------------------------------------------------------------------
-
     private suspend fun buildModelNode(nodeData: Map<String, Any>): ModelNode? {
         var fileLocation = nodeData["uri"] as? String ?: return null
         when (nodeData["type"] as Int) {
-                0 -> { // GLTF2 Model from Flutter asset folder
+                0 -> { 
                     val loader = FlutterInjector.instance().flutterLoader()
                     fileLocation = loader.getLookupKeyForAsset(fileLocation)
                 }
-                1 -> { // GLB Model from the web
-                    fileLocation = fileLocation
-                }
-                2 -> { // fileSystemAppFolderGLB
-                    fileLocation = fileLocation
-                }
-                3 -> { //fileSystemAppFolderGLTF2
+                1 -> { fileLocation = fileLocation }
+                2 -> { fileLocation = fileLocation }
+                3 -> { 
                     val documentsPath = viewContext.applicationInfo.dataDir
                     fileLocation = documentsPath + "/app_flutter/" + nodeData["uri"] as String
                 }
-                else -> {
-                    return null
-                }
+                else -> { return null }
         }
         
-        if (fileLocation == null) {
-            return null
-        }
+        if (fileLocation == null) return null
         val transformation = nodeData["transformation"] as? ArrayList<Double>
-        if (transformation == null) {
-            return null
-        }
+        if (transformation == null) return null
 
         return try {
             sceneView.modelLoader.loadModelInstance(fileLocation)?.let { modelInstance ->
@@ -497,9 +432,7 @@ class ArView(
                     val scale = transformation.first().toFloat()
                     this.scale = Scale(scale, scale, scale)
                 }
-            } ?: run {
-                null
-            }
+            } ?: run { null }
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -525,7 +458,6 @@ class ArView(
                 mainScope.launch {
                     try {
                         buildModelNode(dict_node)?.let { node ->
-                            // This is correct, you add a node to an anchor node
                             anchorNode.addChildNode(node)
                             node.name?.let { nodeName ->
                                 nodesMap[nodeName] = node
@@ -570,7 +502,6 @@ class ArView(
                     screenPosition["y"]?.toFloat() ?: 0f
                 )
 
-                // FIXED: This will resolve now
                 val hitResult = hitResults.firstOrNull { 
                     val trackable = it.trackable 
                     (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || (trackable is com.google.ar.core.Point && trackable.trackingState == TrackingState.TRACKING)
@@ -631,8 +562,6 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                // The correct way to show feature points now is via session config
-                // This is handled by setting pointCloudMode in the config
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
                         LayoutInflater
@@ -833,6 +762,11 @@ class ArView(
     }
 
     private fun handleGetCameraPose(result: MethodChannel.Result) {
+        // Fix: Guard against destroyed view
+        if (isDestroyed) {
+            result.error("VIEW_DESTROYED", "ArView is disposed", null)
+            return
+        }
         try {
             val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data
             if (cameraPose != null) {
@@ -878,6 +812,11 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
+        // Fix: Guard against destroyed view
+        if (isDestroyed) {
+             result.error("VIEW_DESTROYED", "ArView is disposed", null)
+             return
+        }
         try {
             mainScope.launch {
                 withContext(Dispatchers.Main) {
@@ -979,6 +918,7 @@ class ArView(
     }
 
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
+        // ... (unchanged) ...
         try {
             Log.d(TAG, "🔄 Initialisation du mode Cloud Anchor...")
             sceneView.session?.let { session ->
@@ -997,6 +937,7 @@ class ArView(
     }
 
     private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
+        // ... (unchanged) ...
         try {
             val anchorName = call.argument<String>("name")
             Log.d(TAG, "⚓ Début de l'upload de l'ancre: $anchorName")
@@ -1048,7 +989,7 @@ class ArView(
             Log.d(TAG, "☁️ Début de l'hébergement de l'ancre cloud...")
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
                 Log.d(TAG, "📡 État de l'hébergement: $state, ID: $cloudAnchorId")
-                mainScope.launch { // Use Anchor.CloudAnchorState
+                mainScope.launch { 
                     if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
                         Log.d(TAG, "✅ Ancre cloud hébergée avec succès: $cloudAnchorId")
                         val args = mapOf(
@@ -1076,7 +1017,8 @@ class ArView(
     }
 
     private fun handleDownloadAnchor(call: MethodCall, result: MethodChannel.Result) {
-        try {
+        // ... (unchanged) ...
+         try {
             val cloudAnchorId = call.argument<String>("cloudanchorid")
             if (cloudAnchorId == null) {
                 mainScope.launch {
@@ -1143,6 +1085,9 @@ class ArView(
     override fun getView(): View = rootLayout
 
     override fun dispose() {
+        // Fix: Mark as destroyed immediately
+        if (isDestroyed) return
+        isDestroyed = true
         Log.i(TAG, "dispose")
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
@@ -1203,6 +1148,7 @@ class ArView(
     }
 
     private fun makeWorldOriginNode(context: Context): Node {
+        // ... (unchanged) ...
         val axisSize = 0.1f
         val axisRadius = 0.005f
         
@@ -1249,12 +1195,12 @@ class ArView(
         rootNode.addChildNode(zNode)
 
         xNode.position = Position(axisSize / 2, 0f, 0f)
-        xNode.rotation = Rotation(0f, 0f, 90f) // Rotation autour de l'axe Z
+        xNode.rotation = Rotation(0f, 0f, 90f)
 
         yNode.position = Position(0f, axisSize / 2, 0f)
 
         zNode.position = Position(0f, 0f, axisSize / 2)
-        zNode.rotation = Rotation(90f, 0f, 0f) // Rotation autour de l'axe X
+        zNode.rotation = Rotation(90f, 0f, 0f)
 
         return rootNode
     }
