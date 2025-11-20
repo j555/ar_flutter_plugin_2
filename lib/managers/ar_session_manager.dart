@@ -239,6 +239,9 @@ class ARSessionManager {
     bool handleRotation = false, // nodes can not be rotated by default
     int? planeDetectionConfig,
   }) {
+    // DEBUG LOG: Print what we are sending to native
+    print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index})");
+    
     _channel.invokeMethod<void>('init', {
       'showAnimatedGuide': showAnimatedGuide,
       'showFeaturePoints': showFeaturePoints,
