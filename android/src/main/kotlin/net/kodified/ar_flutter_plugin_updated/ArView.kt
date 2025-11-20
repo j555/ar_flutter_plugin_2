@@ -812,19 +812,17 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
-        // Fix: Guard against destroyed view
+        // Fix: Guard against destroyed view and invalid dimensions
         if (isDestroyed) {
              result.error("VIEW_DESTROYED", "ArView is disposed", null)
              return
         }
-        // FIX: Guard against 0 size (causes PixelCopy crash/hang)
         if (sceneView.width <= 0 || sceneView.height <= 0) {
              Log.e(TAG, "SNAPSHOT_ERROR: View has invalid dimensions (${sceneView.width}x${sceneView.height})")
-             result.error("SNAPSHOT_ERROR", "View has invalid dimensions", null)
+             result.error("SNAPSHOT_ERROR", "View has invalid dimensions (0x0 or negative)", null)
              return
         }
         
-        // Use Dispatchers.Main to ensure UI operations (like PixelCopy.request) are safe
         mainScope.launch(Dispatchers.Main) { 
             val bitmap =
                 Bitmap.createBitmap(
@@ -843,12 +841,13 @@ class ArView(
                         }
                         if (copyResult == PixelCopy.SUCCESS) {
                             // CRITICAL FIX: Move heavy compression/serialization to a background thread
+                            // The result.success is called from Dispatchers.Main implicitly by the Handler(Looper.getMainLooper()) listener.
                             mainScope.launch(Dispatchers.IO) {
                                 val byteStream = java.io.ByteArrayOutputStream()
                                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
                                 val byteArray = byteStream.toByteArray()
                                 withContext(Dispatchers.Main) {
-                                    result.success(byteArray) // Send result to Flutter on the main thread
+                                    result.success(byteArray)
                                 }
                             }
                         } else {
@@ -856,6 +855,7 @@ class ArView(
                         }
                     }
 
+                // PixelCopy request runs asynchronously and calls the listener on the main Looper thread.
                 PixelCopy.request(
                     sceneView,
                     bitmap,
