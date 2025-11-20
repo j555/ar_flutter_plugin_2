@@ -819,45 +819,52 @@ class ArView(
         }
         // FIX: Guard against 0 size (causes PixelCopy crash/hang)
         if (sceneView.width <= 0 || sceneView.height <= 0) {
+             Log.e(TAG, "SNAPSHOT_ERROR: View has invalid dimensions (${sceneView.width}x${sceneView.height})")
              result.error("SNAPSHOT_ERROR", "View has invalid dimensions", null)
              return
         }
-        try {
-            mainScope.launch {
-                withContext(Dispatchers.Main) {
-                    val bitmap =
-                        Bitmap.createBitmap(
-                            sceneView.width,
-                            sceneView.height,
-                            Bitmap.Config.ARGB_8888,
-                        )
+        
+        // Use Dispatchers.Main to ensure UI operations (like PixelCopy.request) are safe
+        mainScope.launch(Dispatchers.Main) { 
+            val bitmap =
+                Bitmap.createBitmap(
+                    sceneView.width,
+                    sceneView.height,
+                    Bitmap.Config.ARGB_8888,
+                )
 
-                    try {
-                        val listener =
-                            PixelCopy.OnPixelCopyFinishedListener { copyResult ->
-                                if (copyResult == PixelCopy.SUCCESS) {
-                                    val byteStream = java.io.ByteArrayOutputStream()
-                                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
-                                    val byteArray = byteStream.toByteArray()
-                                    result.success(byteArray)
-                                } else {
-                                    result.error("SNAPSHOT_ERROR", "Failed to capture snapshot", null)
+            try {
+                val listener =
+                    PixelCopy.OnPixelCopyFinishedListener { copyResult ->
+                        // CRITICAL FINAL GUARD: Check isDestroyed again before processing result
+                        if (isDestroyed) { 
+                            Log.e(TAG, "Snapshot finished AFTER dispose, aborting result.")
+                            return@OnPixelCopyFinishedListener
+                        }
+                        if (copyResult == PixelCopy.SUCCESS) {
+                            // CRITICAL FIX: Move heavy compression/serialization to a background thread
+                            mainScope.launch(Dispatchers.IO) {
+                                val byteStream = java.io.ByteArrayOutputStream()
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+                                val byteArray = byteStream.toByteArray()
+                                withContext(Dispatchers.Main) {
+                                    result.success(byteArray) // Send result to Flutter on the main thread
                                 }
                             }
-
-                        PixelCopy.request(
-                            sceneView,
-                            bitmap,
-                            listener,
-                            Handler(Looper.getMainLooper()),
-                        )
-                    } catch (e: Exception) {
-                        result.error("SNAPSHOT_ERROR", e.message, null)
+                        } else {
+                            result.error("SNAPSHOT_ERROR", "Failed to capture snapshot (PixelCopy failed with code $copyResult)", null)
+                        }
                     }
-                }
+
+                PixelCopy.request(
+                    sceneView,
+                    bitmap,
+                    listener,
+                    Handler(Looper.getMainLooper()),
+                )
+            } catch (e: Exception) {
+                result.error("SNAPSHOT_ERROR", e.message, null)
             }
-        } catch (e: Exception) {
-            result.error("SNAPSHOT_ERROR", e.message, null)
         }
     }
 
