@@ -59,17 +59,14 @@ class ARSessionManager {
   /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getCameraPose() async {
     try {
-      // FIX: Expect a Map, not a List
       final poseList =
           await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
       if (poseList == null) return null;
-
-      // The native code returns a List<double>(16) which is a Matrix4
       final poseMatrix = MatrixConverter().fromJson(poseList);
       return poseMatrix;
-
     } catch (e) {
-      print('Error caught in getCameraPose: ' + e.toString());
+      // FIX: Silence the error logs. Typically caused by view disposal.
+      // print('Error caught in getCameraPose: ' + e.toString());
       return null;
     }
   }
