@@ -237,11 +237,12 @@ class ARSessionManager {
     bool handleTaps = true,
     bool handlePans = false, // nodes are not draggable by default
     bool handleRotation = false, // nodes can not be rotated by default
+    int? planeDetectionConfig,
   }) {
     _channel.invokeMethod<void>('init', {
       'showAnimatedGuide': showAnimatedGuide,
       'showFeaturePoints': showFeaturePoints,
-      'planeDetectionConfig': planeDetectionConfig.index,
+      'planeDetectionConfig': planeDetectionConfig ?? this.planeDetectionConfig.index,
       'showPlanes': showPlanes,
       'customPlaneTexturePath': customPlaneTexturePath,
       'showWorldOrigin': showWorldOrigin,
