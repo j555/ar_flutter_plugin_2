@@ -1108,11 +1108,11 @@ class ArView(
 
         nodesMap.clear()
 
-        try {
-            sceneView.destroy() // This is the call that panics if run twice
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during sceneView.destroy(): ${e.message}")
-        }
+        // try {
+        //     sceneView.destroy() // This is the call that panics if run twice
+        // } catch (e: Exception) {
+        //     Log.e(TAG, "Error during sceneView.destroy(): ${e.message}")
+        // }
     }
 
     private fun notifyError(error: String) {
