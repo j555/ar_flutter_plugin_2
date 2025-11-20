@@ -167,6 +167,12 @@ class ARSessionManager {
     });
   }
 
+  void showFeaturePoints(bool showFeaturePoints){
+  _channel.invokeMethod<void>('showFeaturePoints', {
+    "showFeaturePoints": showFeaturePoints,
+  });
+}
+
   Future<void> _platformCallHandler(MethodCall call) {
     if (debug) {
       print('_platformCallHandler call ${call.method} ${call.arguments}');
@@ -241,7 +247,7 @@ class ARSessionManager {
   }) {
     // DEBUG LOG: Print what we are sending to native
     print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index})");
-    
+
     _channel.invokeMethod<void>('init', {
       'showAnimatedGuide': showAnimatedGuide,
       'showFeaturePoints': showFeaturePoints,

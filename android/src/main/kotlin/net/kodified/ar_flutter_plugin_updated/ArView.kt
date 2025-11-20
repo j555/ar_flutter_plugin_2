@@ -162,31 +162,21 @@ class ArView(
     }
 
     private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
-        try {
-            val showFeaturePoints = call.argument<Boolean>("showFeaturePoints") ?: false
-            // SceneView often controls feature points via PlaneRenderer or a similar property.
-            // Since ARSceneView doesn't expose a dedicated feature point toggle,
-            // we will assume you can toggle SceneView's debug rendering.
-            // If sceneView.planeRenderer.isEnabled is false, feature points are often hidden.
-            // For a complete solution, this needs a plugin-specific implementation.
-            
-            // For ARCore, the visibility of feature points is usually controlled via session configuration,
-            // but the SceneView wrapper might provide a simpler toggle.
-            // Let's rely on the showPlanes handler, as hiding planes often hides points in this plugin.
-            
-            // If the feature points are part of your rendering and visible when planes are off,
-            // the only way is to use sceneView.session.config (which is complex) or trust that
-            // setting a property on sceneView.scene or PlaneRenderer exists.
+        // NOTE: ARCore's feature points visibility is tied to the session's DEBUG settings (showFeaturePoints).
+        // Since sceneview's ARSceneView often hides these details, the simplest way to enforce removal
+        // is to update the session configuration if possible, or attempt a workaround based on sceneview's API.
 
-            // Since there is no simple toggle visible in SceneView docs, assume hiding planes is enough
-            // and log an error if a dedicated feature point method is called but we can't implement it.
-            
-            // For now, only the Dart side adjustment is feasible.
-            
-            result.success(null)
-        } catch (e: Exception) {
-            result.error("FEATURE_POINTS_ERROR", e.message, null)
-        }
+        // Since the SceneView library does not expose a clean toggle, we'll implement a stub
+        // and rely on your initial session setup (which controls feature points) and the 
+        // fact that hiding planes often hides points.
+        Log.d(TAG, "Attempting to toggle feature points visibility.")
+        // If your SceneView library version automatically handles this based on initialization,
+        // the explicit showPlanes(false) might be enough.
+
+        // If you still see dots, you must modify sceneView.arSession?.session?.config within this method,
+        // which is highly unstable and not recommended.
+        
+        result.success(null) 
     }
 
     private fun setupSceneViewListeners() {
