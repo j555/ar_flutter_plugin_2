@@ -142,7 +142,7 @@ class ArView(
             sharedLifecycle = lifecycle,
             sessionConfiguration = { session, config ->
                 config.apply {
-                    planeFindingMode = Config.PlaneFindingMode.DISABLED
+                    planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     depthMode = Config.DepthMode.DISABLED
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
