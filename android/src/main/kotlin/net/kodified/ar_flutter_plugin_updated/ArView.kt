@@ -1094,11 +1094,18 @@ class ArView(
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
+
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
+
         nodesMap.clear()
-        sceneView.destroy()
+
+        try {
+            sceneView.destroy() // This is the call that panics if run twice
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during sceneView.destroy(): ${e.message}")
+        }
     }
 
     private fun notifyError(error: String) {
