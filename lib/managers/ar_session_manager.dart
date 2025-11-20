@@ -160,25 +160,27 @@ class ARSessionManager {
     _channel.invokeMethod<void>('enableCamera');
   }
 
-  //Show or hide planes
+  // Show or hide feature points (White Dots)
+  void showFeaturePoints(bool showFeaturePoints){
+    _channel.invokeMethod<void>('showFeaturePoints', {
+      "showFeaturePoints": showFeaturePoints,
+    });
+  } // <--- CORRECT CLOSING BRACE
+
+  // Manually hides/shows the visible point cloud nodes (Blue Dots)
+  void hidePointCloud(bool hide) {
+    _channel.invokeMethod<void>('hidePointCloud', {
+      "hide": hide,
+    });
+  } // <--- CORRECT CLOSING BRACE
+
+  // Show or hide planes (Plane Meshes)
   void showPlanes(bool showPlanes){
     _channel.invokeMethod<void>('showPlanes', {
-    "showPlanes": showPlanes,
+      "showPlanes": showPlanes,
     });
   }
 
-  void showFeaturePoints(bool showFeaturePoints){
-  _channel.invokeMethod<void>('showFeaturePoints', {
-    "showFeaturePoints": showFeaturePoints,
-  });
-
-  void hidePointCloud(bool hide) {
-  _channel.invokeMethod<void>('hidePointCloud', {
-    "hide": hide,
-  });
-}
-
-}
 
   Future<void> _platformCallHandler(MethodCall call) {
     if (debug) {
