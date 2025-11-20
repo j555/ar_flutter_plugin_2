@@ -97,6 +97,7 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
+            "hidePointCloud" -> handleHidePointCloud(call, result)
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -177,6 +178,22 @@ class ArView(
         // which is highly unstable and not recommended.
         
         result.success(null) 
+    }
+
+    private fun handleHidePointCloud(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val hide = call.argument<Boolean>("hide") ?: true
+            
+            // Iterate over all currently active PointCloudNodes and toggle their rendering visibility.
+            pointCloudNodes.forEach { node ->
+                node.isVisible = !hide
+            }
+            Log.d(TAG, if (hide) "Hiding all point cloud nodes." else "Showing all point cloud nodes.")
+            result.success(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error toggling point cloud visibility: ${e.message}")
+            result.error("POINT_CLOUD_ERROR", e.message, null)
+        }
     }
 
     private fun setupSceneViewListeners() {

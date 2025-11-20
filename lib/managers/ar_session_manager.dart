@@ -171,6 +171,13 @@ class ARSessionManager {
   _channel.invokeMethod<void>('showFeaturePoints', {
     "showFeaturePoints": showFeaturePoints,
   });
+
+  void hidePointCloud(bool hide) {
+  _channel.invokeMethod<void>('hidePointCloud', {
+    "hide": hide,
+  });
+}
+
 }
 
   Future<void> _platformCallHandler(MethodCall call) {
