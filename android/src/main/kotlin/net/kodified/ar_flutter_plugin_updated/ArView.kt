@@ -74,6 +74,8 @@ class ArView(
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
+    
+    // Flag to prevent crashes if methods are called after the view is destroyed
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
@@ -81,8 +83,6 @@ class ArView(
     // --- OPTIMIZATION: Point Cloud Pooling ---
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
-    
-    // FIX: Use ArrayList to support removeLastOrNull() cleanly
     private val pointCloudNodePool = ArrayList<PointCloudNode>() 
     
     private var lastPointCloudTimestamp: Long? = null
@@ -104,7 +104,7 @@ class ArView(
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
             "getProjectionMatrix" -> handleGetProjectionMatrix(result)
-            "getLightEstimate" -> handleGetLightEstimate(result) 
+            "getLightEstimate" -> handleGetLightEstimate(result)
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
@@ -148,13 +148,18 @@ class ArView(
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    // FIX: Using cached depth mode check or defaulting to disabled if problematic
+                    
+                    // Automatically enable Depth (Occlusion) if supported
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) 
                                     Config.DepthMode.AUTOMATIC 
                                 else 
                                     Config.DepthMode.DISABLED
+
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
+                    
+                    // Enable Real-World Lighting
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                    
                     focusMode = Config.FocusMode.AUTO
                 }
             }
@@ -169,7 +174,7 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // FIX: Correctly handle ARCore void method for color correction
+    // --- FEATURE: Light Estimation ---
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -178,7 +183,7 @@ class ArView(
         
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
-            // ARCore requires passing an array to populate
+            // ARCore requires passing an array to populate color correction
             val colorCorrectionFloats = FloatArray(4)
             estimate.getColorCorrection(colorCorrectionFloats, 0)
 
@@ -193,6 +198,7 @@ class ArView(
     }
 
     private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
+        // Feature points visibility is handled internally by the session config
         result.success(null) 
     }
 
@@ -212,7 +218,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // FIX: Cache Light Estimate for the method channel
+                // Cache Light Estimate for the method channel
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -267,13 +273,13 @@ class ArView(
                 val currentIdSet = HashSet<Int>()
                 for(i in 0 until pointCount) currentIdSet.add(ids[i])
 
-                // Recycling Logic
+                // --- Recycling Logic ---
                 val iterator = pointCloudNodes.iterator()
                 while (iterator.hasNext()) {
                     val node = iterator.next()
                     if (!currentIdSet.contains(node.id)) {
                         sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node) // FIX: Add back to pool
+                        pointCloudNodePool.add(node) // Return to pool
                         iterator.remove()
                     }
                 }
@@ -295,8 +301,7 @@ class ArView(
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
                     } else {
-                        // FIX: Use removeLastOrNull on ArrayList (safe in modern Kotlin) or manual check
-                        // For maximum safety with older Kotlin:
+                        // Retrieve from Pool or Create New
                         var node: PointCloudNode? = null
                         if (pointCloudNodePool.isNotEmpty()) {
                             node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
@@ -306,6 +311,7 @@ class ArView(
                             val modelInst = getPointCloudModelInstance() ?: break
                             node = PointCloudNode(modelInst, id, confidence)
                         } else {
+                            // Reset pooled node properties
                             node.id = id
                             node.confidence = confidence
                             node.isVisible = true 
@@ -770,7 +776,7 @@ class ArView(
         result: MethodChannel.Result,
     ) {
         try {
-            val cloudAnchorId = call.argument<String>("cloudAnchorId")
+            val cloudAnchorId = call.argument<String>("cloudanchorid")
             if (cloudAnchorId == null) {
                 result.error("INVALID_ARGUMENT", "Cloud Anchor ID is required", null)
                 return
@@ -1111,7 +1117,7 @@ class ArView(
             CloudAnchorNode.resolve(
                 sceneView.engine,
                 session,
-                cloudAnchorId
+                cloudAnchorId,
             ) { state, node ->
                 mainScope.launch {
                     if (!state.isError && node != null) {
@@ -1153,30 +1159,31 @@ class ArView(
         }
     }
 
+    override fun getView(): View = rootLayout
+
     override fun dispose() {
-        // Fix: Mark as destroyed immediately
+        // Fix: Mark as destroyed immediately to prevent race conditions
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // --- CLEANUP POOLS ---
-        pointCloudNodePool.clear()
-        pointCloudNodes.clear()
-
+        // Stop Method Channels
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
+        // Clear Memory Pools and Maps
+        pointCloudNodePool.clear()
+        pointCloudNodes.clear()
         nodesMap.clear()
+        anchorNodesMap.clear()
 
-        // try {
-        //     sceneView.destroy() // This is the call that panics if run twice
-        // } catch (e: Exception) {
-        //     Log.e(TAG, "Error during sceneView.destroy(): ${e.message}")
-        // }
+        // Detach from view hierarchy to prevent double-free issues in native lifecycle
+        rootLayout.removeAllViews()
+        
+        // Note: We do not manually call destroy() here because the lifecycle observer 
+        // attached in init {} handles it. Calling it twice causes the native crash.
     }
-
-    override fun getView(): View = rootLayout // Added back getView implementation
 
     private fun notifyError(error: String) {
         mainScope.launch {
@@ -1230,7 +1237,6 @@ class ArView(
     }
 
     private fun makeWorldOriginNode(context: Context): Node {
-        // ... (unchanged) ...
         val axisSize = 0.1f
         val axisRadius = 0.005f
         
