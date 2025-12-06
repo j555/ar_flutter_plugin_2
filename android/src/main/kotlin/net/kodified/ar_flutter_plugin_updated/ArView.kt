@@ -1,8 +1,5 @@
 package net.kodified.ar_flutter_plugin_updated
 
-// ---------------------------------------------------------------------------
-// Imports
-// ---------------------------------------------------------------------------
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
@@ -50,7 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-import java.util.ArrayDeque // Added for Object Pooling
+import java.util.ArrayList // FIX: Use ArrayList for easier pooling
 
 class ArView(
     context: Context,
@@ -77,24 +74,25 @@ class ArView(
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
-    
-    // --- FIX: Add destruction flag to prevent native crashes ---
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
 
-    // Point‑cloud specific fields
+    // --- OPTIMIZATION: Point Cloud Pooling ---
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
-    // --- OPTIMIZATION: Object Pool for Point Cloud Nodes ---
-    private val pointCloudNodePool = ArrayDeque<PointCloudNode>()
+    
+    // FIX: Use ArrayList to support removeLastOrNull() cleanly
+    private val pointCloudNodePool = ArrayList<PointCloudNode>() 
     
     private var lastPointCloudTimestamp: Long? = null
     private var lastPointCloudFrame: Frame? = null
     private var minConfidence = 0.1f
     private var maxPoints = 500
-    // Optimization: Process point cloud every N frames to reduce load
     private var frameCounter = 0
+
+    // FIX: Cache the latest light estimate from the frame update loop
+    private var latestLightEstimate: LightEstimate? = null
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         when (call.method) {
@@ -106,7 +104,7 @@ class ArView(
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
             "getProjectionMatrix" -> handleGetProjectionMatrix(result)
-            "getLightEstimate" -> handleGetLightEstimate(result) // --- NEW: Light Estimate ---
+            "getLightEstimate" -> handleGetLightEstimate(result) 
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
@@ -150,18 +148,13 @@ class ArView(
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    
-                    // --- FEATURE: Enable Occlusion (Depth API) ---
+                    // FIX: Using cached depth mode check or defaulting to disabled if problematic
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) 
                                     Config.DepthMode.AUTOMATIC 
                                 else 
                                     Config.DepthMode.DISABLED
-                                    
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
-                    
-                    // --- FEATURE: Enable Real-World Lighting ---
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                    
                     focusMode = Config.FocusMode.AUTO
                 }
             }
@@ -176,43 +169,38 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // --- NEW: Handle Light Estimate ---
+    // FIX: Use the cached variable 'latestLightEstimate' instead of accessing session
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
             return
         }
-        val frame = sceneView.arSession?.frame
-        if (frame != null && frame.lightEstimate.state == LightEstimate.State.VALID) {
+        
+        val estimate = latestLightEstimate
+        if (estimate != null && estimate.state == LightEstimate.State.VALID) {
             val args = mapOf(
-                "pixelIntensity" to frame.lightEstimate.pixelIntensity,
-                // ARCore typically returns color correction as [R, G, B, A]
-                "colorCorrection" to (frame.lightEstimate.colorCorrection?.toList() ?: emptyList<Float>())
+                "pixelIntensity" to estimate.pixelIntensity,
+                // Safely convert float array to list
+                "colorCorrection" to (estimate.colorCorrection?.map { it.toDouble() } ?: emptyList<Double>())
             )
             result.success(args)
         } else {
-            result.error("LIGHT_ESTIMATE_ERROR", "Light estimate not valid", null)
+            result.error("LIGHT_ESTIMATE_ERROR", "Light estimate not valid or not yet available", null)
         }
     }
 
     private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
-        // NOTE: ARCore's feature points visibility is tied to the session's DEBUG settings.
-        // Since sceneview's ARSceneView handles this internally, we often rely on showPlanes/hidePointCloud.
         result.success(null) 
     }
 
     private fun handleHidePointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
             val hide = call.argument<Boolean>("hide") ?: true
-            
-            // Iterate over all currently active PointCloudNodes and toggle their rendering visibility.
             pointCloudNodes.forEach { node ->
                 node.isVisible = !hide
             }
-            Log.d(TAG, if (hide) "Hiding all point cloud nodes." else "Showing all point cloud nodes.")
             result.success(null)
         } catch (e: Exception) {
-            Log.e(TAG, "Error toggling point cloud visibility: ${e.message}")
             result.error("POINT_CLOUD_ERROR", e.message, null)
         }
     }
@@ -220,6 +208,10 @@ class ArView(
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
+                
+                // FIX: Cache Light Estimate for the method channel
+                latestLightEstimate = frame.lightEstimate
+
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
                 for (plane in updatedPlanes) {
                     when (plane.trackingState) {
@@ -253,12 +245,8 @@ class ArView(
                     }
                 }
 
-                // ------------------- OPTIMIZED Point‑cloud handling -------------------
-                // Throttle updates to every 3rd frame to reduce buffer contention
                 frameCounter++
-                if (frameCounter % 3 != 0) {
-                    return@sessionUpdated
-                }
+                if (frameCounter % 3 != 0) return@sessionUpdated
 
                 val pointCloud = frame.acquirePointCloud()
                 if (pointCloud.timestamp == lastPointCloudTimestamp) {
@@ -273,24 +261,21 @@ class ArView(
                 val points: FloatBuffer = pointCloud.points
                 val pointCount = ids.limit()
 
-                // 1. Mark existing nodes for recycling
                 val currentIdSet = HashSet<Int>()
                 for(i in 0 until pointCount) currentIdSet.add(ids[i])
 
+                // Recycling Logic
                 val iterator = pointCloudNodes.iterator()
                 while (iterator.hasNext()) {
                     val node = iterator.next()
                     if (!currentIdSet.contains(node.id)) {
-                        // Recycle this node instead of destroying
                         sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node) // Add to pool
+                        pointCloudNodePool.add(node) // FIX: Add back to pool
                         iterator.remove()
                     }
                 }
 
-                // 2. Update existing or Create new from Pool
                 for (i in 0 until pointCount) {
-                    // Check max points limit
                     if (pointCloudNodes.size >= maxPoints) break
                     
                     val id = ids[i]
@@ -302,24 +287,25 @@ class ArView(
 
                     if (confidence < minConfidence) continue
 
-                    // Check if node exists for this ID
                     val existing = pointCloudNodes.firstOrNull { it.id == id }
                     if (existing != null) {
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
                     } else {
-                        // Create New (Try Pool First)
-                        var node = pointCloudNodePool.removeLastOrNull()
+                        // FIX: Use removeLastOrNull on ArrayList (safe in modern Kotlin) or manual check
+                        // For maximum safety with older Kotlin:
+                        var node: PointCloudNode? = null
+                        if (pointCloudNodePool.isNotEmpty()) {
+                            node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
+                        }
                         
                         if (node == null) {
-                            // Pool empty, create fresh
                             val modelInst = getPointCloudModelInstance() ?: break
                             node = PointCloudNode(modelInst, id, confidence)
                         } else {
-                            // Reset pooled node properties
                             node.id = id
                             node.confidence = confidence
-                            node.isVisible = true // Ensure visible when reused
+                            node.isVisible = true 
                         }
                         
                         node.position = Position(x, y, z)
@@ -327,7 +313,6 @@ class ArView(
                         sceneView.addChildNode(node)
                     }
                 }
-
                 pointCloud.release()
             }
         }
@@ -376,12 +361,10 @@ class ArView(
     private fun removePointCloudNode(node: PointCloudNode) {
         pointCloudNodes.remove(node)
         sceneView.removeChildNode(node)
-        // --- OPTIMIZATION: Recycle instead of destroy ---
         pointCloudNodePool.add(node)
     }
 
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
-        // Fix: Guard against destroyed view
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "ArView is disposed", null)
             return
@@ -614,7 +597,6 @@ class ArView(
 
             sceneView.configureSession { session, config ->
                  config.apply {
-                    // --- OCCLUSION CONFIG ---
                     depthMode = when (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         true -> Config.DepthMode.AUTOMATIC
                         else -> Config.DepthMode.DISABLED
@@ -1027,11 +1009,11 @@ class ArView(
     private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
         try {
             val anchorName = call.argument<String>("name")
-            Log.d(TAG, "Starting anchor upload: $anchorName")
+            Log.d(TAG, "Starting upload of anchor: $anchorName")
             
             val session = sceneView.session
             if (session == null) {
-                Log.e(TAG, "Error: AR Session not available")
+                Log.e(TAG, "Error: AR session not available")
                 result.error("SESSION_ERROR", "AR Session is not available", null)
                 return
             }
@@ -1050,21 +1032,21 @@ class ArView(
             }
 
             if (anchorName == null) {
-                Log.e(TAG, "Error: Anchor name missing")
+                Log.e(TAG, "Error: anchor name missing")
                 result.error("INVALID_ARGUMENT", "Anchor name is required", null)
                 return
             }
 
-            Log.d(TAG, "Checking ability to host Cloud Anchor...")
+            Log.d(TAG, "Verifying ability to host cloud anchor...")
             if (!session.canHostCloudAnchor(sceneView.cameraNode)) {
-                Log.e(TAG, "Error: Insufficient visual data to host Cloud Anchor")
+                Log.e(TAG, "Error: insufficient visual data to host cloud anchor")
                 result.error("HOSTING_ERROR", "Insufficient visual data to host", null)
                 return
             }
 
             val anchorNode = anchorNodesMap[anchorName]
             if (anchorNode == null) {
-                Log.e(TAG, "Error: Anchor not found: $anchorName")
+                Log.e(TAG, "Error: anchor not found: $anchorName")
                 Log.d(TAG, "Available anchors: ${anchorNodesMap.keys}")
                 result.error("ANCHOR_NOT_FOUND", "Anchor not found: $anchorName", null)
                 return
@@ -1073,12 +1055,12 @@ class ArView(
             Log.d(TAG, "Creating CloudAnchorNode...")
             val cloudAnchorNode = CloudAnchorNode(sceneView.engine, anchorNode.anchor!!)
             
-            Log.d(TAG, "Starting Cloud Anchor hosting...")
+            Log.d(TAG, "Starting cloud anchor hosting...")
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
                 Log.d(TAG, "Hosting state: $state, ID: $cloudAnchorId")
                 mainScope.launch { 
                     if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
-                        Log.d(TAG, "Cloud Anchor hosted successfully: $cloudAnchorId")
+                        Log.d(TAG, "Cloud anchor hosted successfully: $cloudAnchorId")
                         val args = mapOf(
                             "name" to anchorName,
                             "cloudanchorid" to cloudAnchorId
@@ -1086,7 +1068,7 @@ class ArView(
                         anchorChannel.invokeMethod("onCloudAnchorUploaded", args)
                         result.success(true)
                     } else {
-                        Log.e(TAG, "Failed to host Cloud Anchor: $state")
+                        Log.e(TAG, "Failed to host cloud anchor: $state")
                         sessionChannel.invokeMethod("onError", listOf("Failed to host cloud anchor: $state"))
                         result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
                     }
