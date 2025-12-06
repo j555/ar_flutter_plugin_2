@@ -167,6 +167,51 @@ class ArView(
         setupSceneViewListeners()
     }
 
+    private fun handleGetCameraPose(result: MethodChannel.Result) {
+        if (isDestroyed) {
+            result.error("VIEW_DESTROYED", "ArView is disposed", null)
+            return
+        }
+        try {
+            val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data
+            if (cameraPose != null) {
+                val matrixData = cameraPose.map { it.toDouble() }
+                result.success(matrixData)
+            } else {
+                result.error("NO_CAMERA_POSE", "Camera pose is not available", null)
+            }
+        } catch (e: Exception) {
+            result.error("CAMERA_POSE_ERROR", e.message, null)
+        }
+    }
+
+    private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val anchorId = call.argument<String>("anchorId")
+            if (anchorId == null) {
+                result.error("INVALID_ARGUMENT", "Anchor ID is required", null)
+                return
+            }
+            
+            var anchor: Anchor? = sceneView.session?.allAnchors?.find { it.cloudAnchorId == anchorId }
+            if (anchor == null) {
+                anchor = anchorNodesMap[anchorId]?.anchor
+            }
+            
+            if (anchor != null) {
+                val anchorPose = anchor.pose
+                val matrix = FloatArray(16)
+                anchorPose.toMatrix(matrix, 0)
+                val matrixData = matrix.map { it.toDouble() }
+                result.success(matrixData)
+            } else {
+                result.error("ANCHOR_NOT_FOUND", "Anchor with ID $anchorId not found", null)
+            }
+        } catch (e: Exception) {
+            result.error("ANCHOR_POSE_ERROR", e.message, null)
+        }
+    }
+
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
