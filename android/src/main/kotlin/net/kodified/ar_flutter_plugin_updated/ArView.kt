@@ -109,9 +109,7 @@ class ArView(
 
         rootLayout.addView(sceneView)
 
-        sessionChannel.setMethodCallHandler { call, result ->
-            onSessionMethodCall(call, result)
-        }
+        sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
 
@@ -132,6 +130,35 @@ class ArView(
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private val onObjectMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        when (call.method) {
+            "addNode" -> {
+                val nodeData = call.arguments as? Map<String, Any>
+                nodeData?.let { handleAddNode(it, result) }
+                    ?: result.error("INVALID_ARGUMENTS", "Node data is required", null)
+            }
+            "addNodeToPlaneAnchor" -> handleAddNodeToPlaneAnchor(call, result)
+            "addNodeToScreenPosition" -> handleAddNodeToScreenPosition(call, result)
+            "removeNode" -> handleRemoveNode(call, result)
+            "transformationChanged" -> handleTransformNode(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private val onAnchorMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        when (call.method) {
+            "addAnchor" -> handleAddAnchor(call, result)
+            "removeAnchor" -> {
+                val anchorName = call.argument<String>("name")
+                handleRemoveAnchor(anchorName, result)
+            }
+            "initGoogleCloudAnchorMode" -> handleInitGoogleCloudAnchorMode(result)
+            "uploadAnchor" -> handleUploadAnchor(call, result)
+            "downloadAnchor" -> handleDownloadAnchor(call, result)
             else -> result.notImplemented()
         }
     }
@@ -841,6 +868,25 @@ class ArView(
         sceneView.removeChildNode(node)
         pointCloudNodePool.add(node)
     }
+
+    private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+        if (isDestroyed) {
+            result.error("VIEW_DESTROYED", "ArView is disposed", null)
+            return
+        }
+        try {
+            val projectionMatrix = sceneView.cameraNode.projectionTransform?.toMatrix()?.data
+            if (projectionMatrix != null) {
+                val matrixData = projectionMatrix.map { it.toDouble() }
+                result.success(matrixData)
+            } else {
+                result.error("CAMERA_NOT_READY", "Camera projection matrix is not available yet.", null)
+            }
+        } catch (e: Exception) {
+            result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
+        }
+    }
+
 
     private fun notifyPlaneOrPointTap(hitResults: List<Map<String, Any?>>) {
         mainScope.launch {
