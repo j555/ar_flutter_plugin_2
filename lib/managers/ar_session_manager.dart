@@ -262,6 +262,7 @@ class ARSessionManager {
     bool handleRotation = false, // nodes can not be rotated by default
     int? planeDetectionConfig,
     bool enableDepth = false, // --- NEW: Occlusion Config ---
+    int lightEstimationMode = 1, // 0=Off, 1=Ambient (Default), 2=HDR
   }) {
     // DEBUG LOG: Print what we are sending to native
     print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index}) Depth: $enableDepth");
@@ -277,6 +278,7 @@ class ARSessionManager {
       'handlePans': handlePans,
       'handleRotation': handleRotation,
       'enableDepth': enableDepth, // Pass new flag to native
+      'lightEstimation': lightEstimationMode,
     });
   }
 
