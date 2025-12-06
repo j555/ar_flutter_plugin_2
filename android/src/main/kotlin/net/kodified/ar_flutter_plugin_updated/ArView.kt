@@ -74,8 +74,6 @@ class ArView(
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
-    
-    // Flag to prevent crashes if methods are called after the view is destroyed
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
@@ -83,6 +81,8 @@ class ArView(
     // --- OPTIMIZATION: Point Cloud Pooling ---
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
+    
+    // Pool to reuse nodes instead of destroying/creating them (reduces GC stutter)
     private val pointCloudNodePool = ArrayList<PointCloudNode>() 
     
     private var lastPointCloudTimestamp: Long? = null
@@ -104,7 +104,7 @@ class ArView(
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
             "getProjectionMatrix" -> handleGetProjectionMatrix(result)
-            "getLightEstimate" -> handleGetLightEstimate(result)
+            "getLightEstimate" -> handleGetLightEstimate(result) 
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
@@ -149,17 +149,12 @@ class ArView(
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     
-                    // Automatically enable Depth (Occlusion) if supported
-                    depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) 
-                                    Config.DepthMode.AUTOMATIC 
-                                else 
-                                    Config.DepthMode.DISABLED
+                    // DEFAULT: Disabled for stability. 
+                    // This will be overridden in handleInit if the Flutter app requests it.
+                    depthMode = Config.DepthMode.DISABLED
 
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
-                    
-                    // Enable Real-World Lighting
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                    
                     focusMode = Config.FocusMode.AUTO
                 }
             }
@@ -174,7 +169,6 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // --- FEATURE: Light Estimation ---
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -183,7 +177,6 @@ class ArView(
         
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
-            // ARCore requires passing an array to populate color correction
             val colorCorrectionFloats = FloatArray(4)
             estimate.getColorCorrection(colorCorrectionFloats, 0)
 
@@ -198,7 +191,6 @@ class ArView(
     }
 
     private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
-        // Feature points visibility is handled internally by the session config
         result.success(null) 
     }
 
@@ -218,7 +210,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // Cache Light Estimate for the method channel
+                // Cache Light Estimate
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -273,13 +265,13 @@ class ArView(
                 val currentIdSet = HashSet<Int>()
                 for(i in 0 until pointCount) currentIdSet.add(ids[i])
 
-                // --- Recycling Logic ---
+                // Recycling Logic
                 val iterator = pointCloudNodes.iterator()
                 while (iterator.hasNext()) {
                     val node = iterator.next()
                     if (!currentIdSet.contains(node.id)) {
                         sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node) // Return to pool
+                        pointCloudNodePool.add(node)
                         iterator.remove()
                     }
                 }
@@ -301,7 +293,7 @@ class ArView(
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
                     } else {
-                        // Retrieve from Pool or Create New
+                        // Safe Pool Retrieval
                         var node: PointCloudNode? = null
                         if (pointCloudNodePool.isNotEmpty()) {
                             node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
@@ -311,7 +303,6 @@ class ArView(
                             val modelInst = getPointCloudModelInstance() ?: break
                             node = PointCloudNode(modelInst, id, confidence)
                         } else {
-                            // Reset pooled node properties
                             node.id = id
                             node.confidence = confidence
                             node.isVisible = true 
@@ -604,12 +595,21 @@ class ArView(
             handlePans = call.argument<Boolean>("handlePans") ?: false
             handleRotation = call.argument<Boolean>("handleRotation") ?: false
 
+            // --- FEATURE: CONFIGURABLE DEPTH ---
+            // If the Flutter app sends 'enableDepth: true', we try to turn it on.
+            // Otherwise, we default to FALSE (Disabled) for stability.
+            val argEnableDepth = call.argument<Boolean>("enableDepth") ?: false
+
             sceneView.configureSession { session, config ->
                  config.apply {
-                    depthMode = when (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                        true -> Config.DepthMode.AUTOMATIC
-                        else -> Config.DepthMode.DISABLED
+                    // Logic: Only enable if requested AND supported by hardware.
+                    // Default to DISABLED to prevent crashes on mid-range devices.
+                    depthMode = if (argEnableDepth && session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                        Config.DepthMode.AUTOMATIC
+                    } else {
+                        Config.DepthMode.DISABLED
                     }
+
                     planeFindingMode = when (argPlaneDetectionConfig) {
                         1 -> Config.PlaneFindingMode.HORIZONTAL
                         2 -> Config.PlaneFindingMode.VERTICAL
@@ -1159,30 +1159,30 @@ class ArView(
         }
     }
 
+    // --- FIX: Implement getView() ---
     override fun getView(): View = rootLayout
 
     override fun dispose() {
-        // Fix: Mark as destroyed immediately to prevent race conditions
+        // Fix: Mark as destroyed immediately
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // Stop Method Channels
+        // --- CLEANUP POOLS ---
+        pointCloudNodePool.clear()
+        pointCloudNodes.clear()
+
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        // Clear Memory Pools and Maps
-        pointCloudNodePool.clear()
-        pointCloudNodes.clear()
         nodesMap.clear()
-        anchorNodesMap.clear()
 
-        // Detach from view hierarchy to prevent double-free issues in native lifecycle
-        rootLayout.removeAllViews()
-        
-        // Note: We do not manually call destroy() here because the lifecycle observer 
-        // attached in init {} handles it. Calling it twice causes the native crash.
+        // try {
+        //     sceneView.destroy() // This is the call that panics if run twice
+        // } catch (e: Exception) {
+        //     Log.e(TAG, "Error during sceneView.destroy(): ${e.message}")
+        // }
     }
 
     private fun notifyError(error: String) {
@@ -1237,6 +1237,7 @@ class ArView(
     }
 
     private fun makeWorldOriginNode(context: Context): Node {
+        // ... (unchanged) ...
         val axisSize = 0.1f
         val axisRadius = 0.005f
         
