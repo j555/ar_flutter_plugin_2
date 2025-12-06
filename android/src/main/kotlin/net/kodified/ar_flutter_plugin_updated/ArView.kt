@@ -47,7 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-import java.util.ArrayList // FIX: Use ArrayList for easier pooling
+import java.util.ArrayList
 
 class ArView(
     context: Context,
@@ -91,7 +91,7 @@ class ArView(
     private var maxPoints = 500
     private var frameCounter = 0
 
-    // FIX: Cache the latest light estimate from the frame update loop
+    // Cache the latest light estimate from the frame update loop
     private var latestLightEstimate: LightEstimate? = null
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
@@ -169,7 +169,7 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // FIX: Use the cached variable 'latestLightEstimate' instead of accessing session
+    // FIX: Correctly handle ARCore void method for color correction
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -178,10 +178,13 @@ class ArView(
         
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
+            // ARCore requires passing an array to populate
+            val colorCorrectionFloats = FloatArray(4)
+            estimate.getColorCorrection(colorCorrectionFloats, 0)
+
             val args = mapOf(
                 "pixelIntensity" to estimate.pixelIntensity,
-                // Safely convert float array to list
-                "colorCorrection" to (estimate.colorCorrection?.map { it.toDouble() } ?: emptyList<Double>())
+                "colorCorrection" to colorCorrectionFloats.map { it.toDouble() }
             )
             result.success(args)
         } else {
@@ -293,7 +296,6 @@ class ArView(
                         existing.confidence = confidence
                     } else {
                         // FIX: Use removeLastOrNull on ArrayList (safe in modern Kotlin) or manual check
-                        // For maximum safety with older Kotlin:
                         var node: PointCloudNode? = null
                         if (pointCloudNodePool.isNotEmpty()) {
                             node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
@@ -1009,11 +1011,11 @@ class ArView(
     private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
         try {
             val anchorName = call.argument<String>("name")
-            Log.d(TAG, "Starting upload of anchor: $anchorName")
+            Log.d(TAG, "Starting anchor upload: $anchorName")
             
             val session = sceneView.session
             if (session == null) {
-                Log.e(TAG, "Error: AR session not available")
+                Log.e(TAG, "Error: AR Session not available")
                 result.error("SESSION_ERROR", "AR Session is not available", null)
                 return
             }
@@ -1032,21 +1034,21 @@ class ArView(
             }
 
             if (anchorName == null) {
-                Log.e(TAG, "Error: anchor name missing")
+                Log.e(TAG, "Error: Anchor name missing")
                 result.error("INVALID_ARGUMENT", "Anchor name is required", null)
                 return
             }
 
-            Log.d(TAG, "Verifying ability to host cloud anchor...")
+            Log.d(TAG, "Checking ability to host Cloud Anchor...")
             if (!session.canHostCloudAnchor(sceneView.cameraNode)) {
-                Log.e(TAG, "Error: insufficient visual data to host cloud anchor")
+                Log.e(TAG, "Error: Insufficient visual data to host Cloud Anchor")
                 result.error("HOSTING_ERROR", "Insufficient visual data to host", null)
                 return
             }
 
             val anchorNode = anchorNodesMap[anchorName]
             if (anchorNode == null) {
-                Log.e(TAG, "Error: anchor not found: $anchorName")
+                Log.e(TAG, "Error: Anchor not found: $anchorName")
                 Log.d(TAG, "Available anchors: ${anchorNodesMap.keys}")
                 result.error("ANCHOR_NOT_FOUND", "Anchor not found: $anchorName", null)
                 return
@@ -1055,12 +1057,12 @@ class ArView(
             Log.d(TAG, "Creating CloudAnchorNode...")
             val cloudAnchorNode = CloudAnchorNode(sceneView.engine, anchorNode.anchor!!)
             
-            Log.d(TAG, "Starting cloud anchor hosting...")
+            Log.d(TAG, "Starting Cloud Anchor hosting...")
             cloudAnchorNode.host(session) { cloudAnchorId, state ->
                 Log.d(TAG, "Hosting state: $state, ID: $cloudAnchorId")
                 mainScope.launch { 
                     if (state == Anchor.CloudAnchorState.SUCCESS && cloudAnchorId != null) {
-                        Log.d(TAG, "Cloud anchor hosted successfully: $cloudAnchorId")
+                        Log.d(TAG, "Cloud Anchor hosted successfully: $cloudAnchorId")
                         val args = mapOf(
                             "name" to anchorName,
                             "cloudanchorid" to cloudAnchorId
@@ -1068,7 +1070,7 @@ class ArView(
                         anchorChannel.invokeMethod("onCloudAnchorUploaded", args)
                         result.success(true)
                     } else {
-                        Log.e(TAG, "Failed to host cloud anchor: $state")
+                        Log.e(TAG, "Failed to host Cloud Anchor: $state")
                         sessionChannel.invokeMethod("onError", listOf("Failed to host cloud anchor: $state"))
                         result.error("HOSTING_ERROR", "Failed to host cloud anchor: $state", null)
                     }
