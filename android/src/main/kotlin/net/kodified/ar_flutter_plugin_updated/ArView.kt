@@ -82,7 +82,7 @@ class ArView(
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     
-    // Pool to reuse nodes instead of destroying/creating them (reduces GC stutter)
+    // Use ArrayList to support removeLastOrNull() cleanly
     private val pointCloudNodePool = ArrayList<PointCloudNode>() 
     
     private var lastPointCloudTimestamp: Long? = null
@@ -148,9 +148,8 @@ class ArView(
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    
                     // DEFAULT: Disabled for stability. 
-                    // This will be overridden in handleInit if the Flutter app requests it.
+                    // This is overridden in handleInit if the Flutter app sends 'enableDepth: true'
                     depthMode = Config.DepthMode.DISABLED
 
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
@@ -599,6 +598,8 @@ class ArView(
             // If the Flutter app sends 'enableDepth: true', we try to turn it on.
             // Otherwise, we default to FALSE (Disabled) for stability.
             val argEnableDepth = call.argument<Boolean>("enableDepth") ?: false
+
+            Log.d(TAG, "HANDLE INIT: Config=$argPlaneDetectionConfig Depth=$argEnableDepth")
 
             sceneView.configureSession { session, config ->
                  config.apply {
@@ -1159,7 +1160,7 @@ class ArView(
         }
     }
 
-    // --- FIX: Implement getView() ---
+    // --- FIX: Added getView() back ---
     override fun getView(): View = rootLayout
 
     override fun dispose() {

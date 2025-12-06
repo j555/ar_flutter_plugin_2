@@ -30,7 +30,6 @@ class ARSessionManager {
   
   // ======================================================================
   // CUSTOM CODE START: Add the public 'id' field
-  // This is the fix for your error.
   // ======================================================================
   /// The unique identifier for this session, matching the ARView's viewId.
   final int id;
@@ -47,9 +46,9 @@ class ARSessionManager {
   /// Callback that is triggered once error is triggered
   ErrorHandler? onError;
 
-  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig, // <-- Use this.id
+  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig, 
       {this.debug = false}) {
-    _channel = MethodChannel('arsession_$id'); // <-- Now uses the 'id' field
+    _channel = MethodChannel('arsession_$id'); 
     _channel.setMethodCallHandler(_platformCallHandler);
     if (debug) {
       print("ARSessionManager initialized");
@@ -89,6 +88,20 @@ class ARSessionManager {
       print('Error caught getting projection matrix: ' + e.toString());
       return null;
     }
+  }
+  
+  // --- NEW FEATURE: Light Estimation ---
+  /// Returns map containing pixelIntensity and colorCorrection values
+  Future<Map<String, dynamic>?> getLightEstimate() async {
+    try {
+      final estimate = await _channel.invokeMethod<Map<dynamic, dynamic>>('getLightEstimate');
+      if (estimate != null) {
+        return Map<String, dynamic>.from(estimate);
+      }
+    } catch (e) {
+      // print('Error getting light estimate: $e');
+    }
+    return null;
   }
 
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
@@ -165,14 +178,14 @@ class ARSessionManager {
     _channel.invokeMethod<void>('showFeaturePoints', {
       "showFeaturePoints": showFeaturePoints,
     });
-  } // <--- CORRECT CLOSING BRACE
+  } 
 
   // Manually hides/shows the visible point cloud nodes (Blue Dots)
   void hidePointCloud(bool hide) {
     _channel.invokeMethod<void>('hidePointCloud', {
       "hide": hide,
     });
-  } // <--- CORRECT CLOSING BRACE
+  } 
 
   // Show or hide planes (Plane Meshes)
   void showPlanes(bool showPlanes){
@@ -216,13 +229,8 @@ class ARSessionManager {
           }
           break;
         case 'onPlaneDetected':
-          // Your ar_flutter_plugin_2_impl.dart expects a Map, not an int.
-          // We will forward the full argument map.
           if (onPlaneDetected != null) {
-             // This is a "fix" to match the original plugin's behavior,
-            // but your impl.dart will receive a Map.
-            // This handler is likely NOT used by your impl.dart anyway.
-            final planeCountResult = 1; // Dummy value, as your native code sends a Map
+            final planeCountResult = 1; 
             onPlaneDetected!(planeCountResult);
           }
           break;
@@ -253,9 +261,10 @@ class ARSessionManager {
     bool handlePans = false, // nodes are not draggable by default
     bool handleRotation = false, // nodes can not be rotated by default
     int? planeDetectionConfig,
+    bool enableDepth = false, // --- NEW: Occlusion Config ---
   }) {
     // DEBUG LOG: Print what we are sending to native
-    print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index})");
+    print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index}) Depth: $enableDepth");
 
     _channel.invokeMethod<void>('init', {
       'showAnimatedGuide': showAnimatedGuide,
@@ -267,6 +276,7 @@ class ARSessionManager {
       'handleTaps': handleTaps,
       'handlePans': handlePans,
       'handleRotation': handleRotation,
+      'enableDepth': enableDepth, // Pass new flag to native
     });
   }
 
