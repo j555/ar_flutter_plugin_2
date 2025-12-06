@@ -52,6 +52,11 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
         super.init()
 
         let configuration = ARWorldTrackingConfiguration() // Create default configuration before initializeARView is called
+        // --- NEW: Enable Occlusion by default if supported ---
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+            configuration.frameSemantics.insert(.personSegmentationWithDepth)
+        }
+        
         self.sceneView.delegate = self
         self.coachingView.delegate = self
         self.sceneView.session.run(configuration)
@@ -93,15 +98,19 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
             
             // ==========================================================
             // CUSTOM CODE START: Added getProjectionMatrix handler
-            // This is required by your ar_flutter_plugin_2_impl.dart
             // ==========================================================
             case "getProjectionMatrix":
                 guard let frame = sceneView.session.currentFrame else {
                     result(FlutterError(code: "NATIVE_ERROR", message: "ARFrame is null", details: nil))
                     return
                 }
-                // Get projection matrix for portrait with reasonable z-range
-                let matrix = frame.camera.projectionMatrix(for: .portrait, viewportSize: self.sceneView.bounds.size, zNear: 0.1, zFar: 100.0)
+                
+                // --- FIX: Detect Orientation Dynamically ---
+                let orientation = UIApplication.shared.statusBarOrientation
+                let viewportSize = self.sceneView.bounds.size
+                
+                // Get projection matrix for correct orientation with reasonable z-range
+                let matrix = frame.camera.projectionMatrix(for: orientation, viewportSize: viewportSize, zNear: 0.1, zFar: 100.0)
 
                 // Convert simd_float4x4 to a 16-element List<Double>
                 let matrixAsList: [Double] = [
@@ -112,6 +121,20 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                 ]
                 
                 result(matrixAsList)
+            
+            // --- NEW: Light Estimation ---
+            case "getLightEstimate":
+                if let lightEstimate = sceneView.session.currentFrame?.lightEstimate {
+                    // ARKit ambientIntensity is usually 0-2000 (1000 neutral)
+                    // ARKit ambientColorTemperature is in Kelvin
+                    let args: [String: Any] = [
+                        "ambientIntensity": lightEstimate.ambientIntensity,
+                        "ambientColorTemperature": lightEstimate.ambientColorTemperature
+                    ]
+                    result(args)
+                } else {
+                    result(FlutterError(code: "NO_LIGHT_ESTIMATE", message: "Light estimate not available", details: nil))
+                }
             // ==========================================================
             // CUSTOM CODE END
             // ==========================================================
@@ -276,8 +299,14 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
 
     func initializeARView(arguments: Dictionary<String,Any>, result: FlutterResult){
         // Set plane detection configuration
-        self.configuration = ARWorldTrackingConfiguration()
+        // Re-initialize configuration if needed
         self.configuration.environmentTexturing = .automatic
+        
+        // --- NEW: Maintain Occlusion setting on re-init ---
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.personSegmentationWithDepth) {
+            self.configuration.frameSemantics.insert(.personSegmentationWithDepth)
+        }
+
         if let planeDetectionConfig = arguments["planeDetectionConfig"] as? Int {
             switch planeDetectionConfig {
                 case 1: 
