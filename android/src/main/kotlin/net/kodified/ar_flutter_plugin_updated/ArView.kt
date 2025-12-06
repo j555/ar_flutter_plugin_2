@@ -78,12 +78,10 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
 
-    // --- OPTIMIZATION: Point Cloud Pooling ---
+    // Point Cloud Optimization
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
-    
-    // FIX: Use ArrayList to support removeLastOrNull() cleanly
-    private val pointCloudNodePool = ArrayList<PointCloudNode>() 
+    private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
     private var lastPointCloudTimestamp: Long? = null
     private var lastPointCloudFrame: Frame? = null
@@ -91,7 +89,7 @@ class ArView(
     private var maxPoints = 500
     private var frameCounter = 0
 
-    // Cache the latest light estimate from the frame update loop
+    // Cache the latest light estimate
     private var latestLightEstimate: LightEstimate? = null
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
@@ -148,7 +146,6 @@ class ArView(
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    // FIX: Using cached depth mode check or defaulting to disabled if problematic
                     depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) 
                                     Config.DepthMode.AUTOMATIC 
                                 else 
@@ -169,7 +166,7 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // FIX: Correctly handle ARCore void method for color correction
+    // FIX: Using getColorCorrection with array buffer
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -178,7 +175,6 @@ class ArView(
         
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
-            // ARCore requires passing an array to populate
             val colorCorrectionFloats = FloatArray(4)
             estimate.getColorCorrection(colorCorrectionFloats, 0)
 
@@ -212,7 +208,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // FIX: Cache Light Estimate for the method channel
+                // Cache Light Estimate
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -273,7 +269,7 @@ class ArView(
                     val node = iterator.next()
                     if (!currentIdSet.contains(node.id)) {
                         sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node) // FIX: Add back to pool
+                        pointCloudNodePool.add(node)
                         iterator.remove()
                     }
                 }
@@ -295,7 +291,7 @@ class ArView(
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
                     } else {
-                        // FIX: Use removeLastOrNull on ArrayList (safe in modern Kotlin) or manual check
+                        // Safe Pool Retrieval
                         var node: PointCloudNode? = null
                         if (pointCloudNodePool.isNotEmpty()) {
                             node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
@@ -596,6 +592,9 @@ class ArView(
             val handleTaps = call.argument<Boolean>("handleTaps") ?: true
             handlePans = call.argument<Boolean>("handlePans") ?: false
             handleRotation = call.argument<Boolean>("handleRotation") ?: false
+
+            // Added LOG to debug configuration
+            Log.d(TAG, "HANDLE INIT: Config=$argPlaneDetectionConfig")
 
             sceneView.configureSession { session, config ->
                  config.apply {
@@ -1151,8 +1150,6 @@ class ArView(
             result.error("DOWNLOAD_ANCHOR_ERROR", e.message, null)
         }
     }
-
-    override fun getView(): View = rootLayout
 
     override fun dispose() {
         // Fix: Mark as destroyed immediately
