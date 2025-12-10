@@ -107,13 +107,14 @@ class ARSessionManager {
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
       final List<dynamic>? hitResult = await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
+      // Handle NULL from native side to prevent crash
       if (hitResult == null) return null;
       
       return hitResult.map((e) {
         return ARHitTestResult.fromJson(Map<String, dynamic>.from(e));
       }).toList();
     } catch (e) {
-      print("Error in hitTest: $e");
+      if (debug) print("HitTest Error: $e");
       return null;
     }
   }
