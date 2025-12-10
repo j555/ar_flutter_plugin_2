@@ -108,10 +108,50 @@ class ArView(
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
+            "hitTest" -> handleHitTest(call, result)
             else -> result.notImplemented()
         }
     }
 
+    private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
+        if (isDestroyed || sceneView.session == null) {
+            result.error("SESSION_ERROR", "AR Session not ready", null)
+            return
+        }
+
+        val x = call.argument<Double>("x")?.toFloat()
+        val y = call.argument<Double>("y")?.toFloat()
+
+        if (x == null || y == null) {
+            result.error("INVALID_ARGUMENT", "x and y are required", null)
+            return
+        }
+
+        // Convert normalized (0..1) to pixel coordinates
+        val screenX = x * sceneView.width
+        val screenY = y * sceneView.height
+
+        val frame = sceneView.arFrame
+        if (frame == null) {
+            result.success(null)
+            return
+        }
+
+        val hits = frame.hitTest(screenX, screenY)
+        val serializedHits = ArrayList<Map<String, Any>>()
+
+        for (hit in hits) {
+            val trackable = hit.trackable
+            if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
+                (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
+                
+                serializedHits.add(serializeHitResult(hit))
+            }
+        }
+
+        result.success(serializedHits)
+    }
+    
     private val onObjectMethodCall = MethodChannel.MethodCallHandler { call, result ->
         when (call.method) {
             "addNode" -> {

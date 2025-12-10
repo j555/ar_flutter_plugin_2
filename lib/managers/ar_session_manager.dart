@@ -104,6 +104,20 @@ class ARSessionManager {
     return null;
   }
 
+  Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
+    try {
+      final List<dynamic>? hitResult = await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
+      if (hitResult == null) return null;
+      
+      return hitResult.map((e) {
+        return ARHitTestResult.fromJson(Map<String, dynamic>.from(e));
+      }).toList();
+    } catch (e) {
+      print("Error in hitTest: $e");
+      return null;
+    }
+  }
+
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
