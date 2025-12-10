@@ -8,6 +8,7 @@ import 'package:ar_flutter_plugin_2/utils/json_converters.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart';
+import 'package:ar_flutter_plugin_2/models/ar_node.dart'; // Ensure this is imported
 
 // Type definitions to enforce a consistent use of the API
 typedef ARHitResultHandler = void Function(List<ARHitTestResult> hits);
@@ -28,14 +29,8 @@ class ARSessionManager {
   /// Determines the types of planes ARCore and ARKit should show
   final PlaneDetectionConfig planeDetectionConfig;
   
-  // ======================================================================
-  // CUSTOM CODE START: Add the public 'id' field
-  // ======================================================================
   /// The unique identifier for this session, matching the ARView's viewId.
   final int id;
-  // ======================================================================
-  // CUSTOM CODE END
-  // ======================================================================
 
   /// Receives hit results from user taps with tracked planes or feature points
   late ARHitResultHandler onPlaneOrPointTap;
@@ -55,59 +50,10 @@ class ARSessionManager {
     }
   }
 
-  /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
-  Future<Matrix4?> getCameraPose() async {
-    try {
-      final poseList =
-          await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
-      if (poseList == null) return null;
-      final poseMatrix = MatrixConverter().fromJson(poseList);
-      return poseMatrix;
-    } catch (e) {
-      // FIX: Silence the error logs. Typically caused by view disposal.
-      // print('Error caught in getCameraPose: ' + e.toString());
-      return null;
-    }
-  }
-
-  /// Returns the camera projection matrix in Matrix4 format
-  Future<Matrix4?> getProjectionMatrix() async {
-    try {
-      // The native code returns a DoubleArray(16), which is received as Float64List(16)
-      final serializedProjectionMatrix =
-          await _channel.invokeMethod<Float64List>('getProjectionMatrix');
-      if (serializedProjectionMatrix == null) {
-        return null;
-      }
-      
-      // Use fromJson, which is defined in json_converters.dart
-      // It expects a List<dynamic>, so we use toList()
-      return MatrixConverter().fromJson(serializedProjectionMatrix.toList());
-
-    } catch (e) {
-      print('Error caught getting projection matrix: ' + e.toString());
-      return null;
-    }
-  }
-  
-  // --- NEW FEATURE: Light Estimation ---
-  /// Returns map containing pixelIntensity and colorCorrection values
-  Future<Map<String, dynamic>?> getLightEstimate() async {
-    try {
-      final estimate = await _channel.invokeMethod<Map<dynamic, dynamic>>('getLightEstimate');
-      if (estimate != null) {
-        return Map<String, dynamic>.from(estimate);
-      }
-    } catch (e) {
-      // print('Error getting light estimate: $e');
-    }
-    return null;
-  }
-
+  // === NEW: Required for Live Distance Logic ===
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
       final List<dynamic>? hitResult = await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
-      // Handle NULL from native side to prevent crash
       if (hitResult == null) return null;
       
       return hitResult.map((e) {
@@ -119,20 +65,57 @@ class ARSessionManager {
     }
   }
 
+  /// Returns the camera pose in Matrix4 format with respect to the world coordinate system of the [ARView]
+  Future<Matrix4?> getCameraPose() async {
+    try {
+      final poseList =
+          await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
+      if (poseList == null) return null;
+      final poseMatrix = MatrixConverter().fromJson(poseList);
+      return poseMatrix;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /// Returns the camera projection matrix in Matrix4 format
+  Future<Matrix4?> getProjectionMatrix() async {
+    try {
+      final serializedProjectionMatrix =
+          await _channel.invokeMethod<Float64List>('getProjectionMatrix');
+      if (serializedProjectionMatrix == null) {
+        return null;
+      }
+      return MatrixConverter().fromJson(serializedProjectionMatrix.toList());
+
+    } catch (e) {
+      print('Error caught getting projection matrix: ' + e.toString());
+      return null;
+    }
+  }
+  
+  // --- NEW FEATURE: Light Estimation ---
+  Future<Map<String, dynamic>?> getLightEstimate() async {
+    try {
+      final estimate = await _channel.invokeMethod<Map<dynamic, dynamic>>('getLightEstimate');
+      if (estimate != null) {
+        return Map<String, dynamic>.from(estimate);
+      }
+    } catch (e) { }
+    return null;
+  }
+
   /// Returns the given anchor pose in Matrix4 format with respect to the world coordinate system of the [ARView]
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
       if (anchor.name.isEmpty) {
         throw Exception("Anchor can not be resolved. Anchor name is empty.");
       }
-      // FIX: Expect a List, not a Map
       final poseList =
           await _channel.invokeMethod<List<dynamic>>('getAnchorPose', {
         "anchorId": anchor.name,
       });
       if (poseList == null) return null;
-
-      // The native code returns a List<double>(16) which is a Matrix4
       final poseMatrix = MatrixConverter().fromJson(poseList);
       return poseMatrix;
 
@@ -209,6 +192,22 @@ class ARSessionManager {
     });
   }
 
+  // === RESTORED METHODS FOR 2D IMAGES ===
+  Future<bool> addNode(ARNode node) async {
+    try {
+      return await _channel.invokeMethod<bool>('addNode', node.toMap()) ?? false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Future<void> removeNode(ARNode node) async {
+    try {
+      await _channel.invokeMethod<String>('removeNode', {'name': node.name});
+    } catch (e) {
+      print(e);
+    }
+  }
 
   Future<void> _platformCallHandler(MethodCall call) {
     if (debug) {
@@ -263,9 +262,6 @@ class ARSessionManager {
     return Future.value();
   }
 
-  /// Function to initialize the platform-specific AR view. Can be used to initially set or update session settings.
-  /// [customPlaneTexturePath] refers to flutter assets from the app that is calling this function, NOT to assets within this plugin. Make sure
-  /// the assets are correctly registered in the pubspec.yaml of the parent app (e.g. the ./example app in this plugin's repo)
   onInitialize({
     bool showAnimatedGuide = true,
     bool showFeaturePoints = false,
@@ -273,11 +269,11 @@ class ARSessionManager {
     String? customPlaneTexturePath,
     bool showWorldOrigin = false,
     bool handleTaps = true,
-    bool handlePans = false, // nodes are not draggable by default
-    bool handleRotation = false, // nodes can not be rotated by default
+    bool handlePans = false,
+    bool handleRotation = false,
     int? planeDetectionConfig,
-    bool enableDepth = false, // --- NEW: Occlusion Config ---
-    int lightEstimationMode = 1, // 0=Off, 1=Ambient (Default), 2=HDR
+    bool enableDepth = false,
+    int lightEstimationMode = 1,
   }) {
     // DEBUG LOG: Print what we are sending to native
     print("ARSessionManager: Initializing with config: $planeDetectionConfig (Class default: ${this.planeDetectionConfig.index}) Depth: $enableDepth");
@@ -299,7 +295,6 @@ class ARSessionManager {
 
 
   /// Dispose the AR view on the platforms to pause the scenes and disconnect the platform handlers.
-  /// You should call this before removing the AR view to prevent out of memory erros
   dispose() async {
     try {
       await _channel.invokeMethod<void>("dispose");
