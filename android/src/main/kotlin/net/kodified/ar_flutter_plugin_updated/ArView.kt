@@ -47,7 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
-import java.util.ArrayList // [FIX] Added for pooling
+import java.util.ArrayList
 
 class ArView(
     context: Context,
@@ -75,12 +75,14 @@ class ArView(
     private var handleRotation = false
     private var isSessionPaused = false
     
-    // [FIX] Crash Protection
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
 
-    // --- Point Cloud Pooling [FIXED] ---
+    // Cache the latest frame from the session update listener
+    private var currentFrame: Frame? = null
+
+    // --- Point Cloud Pooling ---
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
@@ -91,7 +93,7 @@ class ArView(
     private var maxPoints = 500
     private var frameCounter = 0
 
-    // [FIX] Cache the latest light estimate
+    // Cache the latest light estimate
     private var latestLightEstimate: LightEstimate? = null
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
@@ -104,18 +106,26 @@ class ArView(
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
             "getProjectionMatrix" -> handleGetProjectionMatrix(result)
-            "getLightEstimate" -> handleGetLightEstimate(result) // [ADDED]
+            "getLightEstimate" -> handleGetLightEstimate(result)
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
-            "hitTest" -> handleHitTest(call, result)
+            "hitTest" -> handleHitTest(call, result) // [FIXED]
             else -> result.notImplemented()
         }
     }
 
+    // [FIXED] Hit Test Implementation using cached currentFrame
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
-        if (isDestroyed || sceneView.session == null) {
-            result.error("SESSION_ERROR", "AR Session not ready", null)
+        if (isDestroyed) {
+            result.error("SESSION_ERROR", "AR Session destroyed", null)
+            return
+        }
+
+        // Use the cached frame from onSessionUpdated
+        val frame = currentFrame
+        if (frame == null) {
+            result.success(null) // No frame available yet
             return
         }
 
@@ -131,17 +141,12 @@ class ArView(
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
 
-        val frame = sceneView.arFrame
-        if (frame == null) {
-            result.success(null)
-            return
-        }
-
-        val hits = frame.hitTest(screenX, screenY)
+        val hits: List<HitResult> = frame.hitTest(screenX, screenY)
         val serializedHits = ArrayList<Map<String, Any>>()
 
         for (hit in hits) {
             val trackable = hit.trackable
+            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
                 
@@ -188,13 +193,9 @@ class ArView(
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    // [FIX] Default to DISABLED for stability
                     depthMode = Config.DepthMode.DISABLED 
                     instantPlacementMode = Config.InstantPlacementMode.DISABLED
-                    
-                    // [FIX] Default to AMBIENT for performance
                     lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
-                    
                     focusMode = Config.FocusMode.AUTO
                 }
             }
@@ -209,7 +210,6 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // [ADDED] Handler for light estimation
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -253,6 +253,9 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
+                // [FIX] Cache the frame for Hit Tests
+                currentFrame = frame
+
                 // [FIX] Cache lighting
                 latestLightEstimate = frame.lightEstimate
 
@@ -262,7 +265,6 @@ class ArView(
                         TrackingState.TRACKING -> {
                             if (!detectedPlanes.contains(plane)) {
                                 detectedPlanes.add(plane)
-                                // [KEEPING ORIGINAL FEATURE] Remove hand guide on detection
                                 rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
                                     rootLayout.removeView(it)
                                 }
@@ -290,7 +292,6 @@ class ArView(
                     }
                 }
 
-                // [FIXED POOLING LOGIC]
                 frameCounter++
                 if (frameCounter % 3 != 0) return@sessionUpdated
 
@@ -401,15 +402,12 @@ class ArView(
         return pointCloudModelInstances.removeLastOrNull()
     }
 
-    // [FIXED] Use pool
     private fun removePointCloudNode(node: PointCloudNode) {
         pointCloudNodes.remove(node)
         sceneView.removeChildNode(node)
         pointCloudNodePool.add(node)
     }
     
-    // --- HANDLERS ---
-
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "ArView is disposed", null)
@@ -485,20 +483,17 @@ class ArView(
             handlePans = call.argument<Boolean>("handlePans") ?: false
             handleRotation = call.argument<Boolean>("handleRotation") ?: false
 
-            // [ADDED] Configurable parameters
             val argEnableDepth = call.argument<Boolean>("enableDepth") ?: false
             val argLightEstimation = call.argument<Int>("lightEstimation") ?: 1
 
             sceneView.configureSession { session, config ->
                  config.apply {
-                    // [FIX] Use config to set depth
                     depthMode = if (argEnableDepth && session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         Config.DepthMode.AUTOMATIC
                     } else {
                         Config.DepthMode.DISABLED
                     }
 
-                    // [FIX] Use config to set light
                     lightEstimationMode = when (argLightEstimation) {
                         0 -> Config.LightEstimationMode.DISABLED
                         2 -> Config.LightEstimationMode.ENVIRONMENTAL_HDR
@@ -525,7 +520,6 @@ class ArView(
                 planeRenderer.isVisible = argShowPlanes
                 planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
 
-                // [KEEPING] Original hand motion guide logic
                 if (argShowAnimatedGuide) {
                     val handMotionLayout =
                         LayoutInflater
@@ -1240,10 +1234,8 @@ class ArView(
         }
     }
 
-    // [FIX] Ensure PlatformView interface is met
     override fun getView(): View = rootLayout
 
-    // [FIX] Correct dispose to prevent double-free crashes
     override fun dispose() {
         if (isDestroyed) return
         isDestroyed = true
@@ -1259,6 +1251,5 @@ class ArView(
         anchorNodesMap.clear()
 
         rootLayout.removeAllViews()
-        // sceneView.destroy() // DO NOT CALL, Lifecycle handles it
     }
 }
