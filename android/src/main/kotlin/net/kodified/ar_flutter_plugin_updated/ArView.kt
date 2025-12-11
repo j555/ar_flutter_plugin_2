@@ -23,6 +23,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.arcore.arFrame
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
@@ -111,6 +112,7 @@ class ArView(
         }
     }
 
+    // ... (serializePlane and handleHitTest are unchanged) ...
     private fun serializePlane(plane: Plane): Map<String, Any> {
         val pose = plane.centerPose
         val matrix = FloatArray(16)
@@ -123,7 +125,6 @@ class ArView(
         )
     }
 
-    // Legacy handler - returns null. We use onCenterHitResult now.
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
         result.success(null)
     }
@@ -181,6 +182,7 @@ class ArView(
         setupSceneViewListeners()
     }
 
+    // ... (handleGetLightEstimate, handleShowFeaturePoints, handleShowPointCloud unchanged) ...
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -229,25 +231,17 @@ class ArView(
             if (!isSessionPaused && !isDestroyed) {
                 latestLightEstimate = frame.lightEstimate
                 
-                // --- THROTTLE: ONLY PROCESS EVERY 10th FRAME ---
-                // This prevents the buffer overflow crash.
+                // THROTTLE: Only process every 10th frame to reduce load
                 frameCounter++
                 if (frameCounter % 10 != 0) return@sessionUpdated
 
-                // --- 1. CENTER HIT TEST (PUSH TO FLUTTER) ---
                 try {
                     val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
                     var sentHit = false
                     
                     for(hit in hits) {
                         val trackable = hit.trackable
-                        // ONLY SEND PLANES. 
                         if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
-                             
-                             // If we hit a Floor (Normal Y is 1), but there is another hit that is a Wall,
-                             // we prefer the Wall. ARCore often returns multiple hits.
-                             // However, for simplicity, we send the first valid Plane hit.
-                             
                              val hitData = serializeHitResult(hit)
                              val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
                              val payload = mapOf(
@@ -278,7 +272,6 @@ class ArView(
                                     sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                                 }
                             } else {
-                                // Only update existing planes occasionally to save bandwidth
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
                                 }
@@ -354,7 +347,6 @@ class ArView(
                             }
                             
                             node.isVisible = showPointCloud 
-                            
                             node.position = Position(x, y, z)
                             pointCloudNodes.add(node)
                             sceneView.addChildNode(node)
@@ -396,6 +388,7 @@ class ArView(
         }
     }
 
+    // ... (Helper methods for PointCloud, projection matrix, poses, init, camera enable/disable, buildModelNode, addNode/removeNode/transformNode/host/resolve/removeAnchor/addNodeToPlaneAnchor - unchanged) ...
     private fun getPointCloudModelInstance(): ModelInstance? {
         if (pointCloudModelInstances.isEmpty()) {
             pointCloudModelInstances = sceneView.modelLoader.createInstancedModel(
@@ -871,9 +864,14 @@ class ArView(
 
             mainScope.launch {
                 val node = buildModelNode(nodeData) ?: return@launch
-                val frame = sceneView.session?.update()
+                
+                // CRITICAL FIX: Do NOT call session.update() manually here.
+                // It steals the buffer from the display loop and causes ImageReader exhaustion and crashes.
+                // Use the cached frame from the SceneView.
+                val frame = sceneView.arFrame
+                
                 if (frame == null) {
-                    result.error("SESSION_ERROR", "AR Session is not ready", null)
+                    result.error("SESSION_ERROR", "AR Frame is not ready", null)
                     return@launch
                 }
                 
@@ -944,6 +942,7 @@ class ArView(
         }
     }
 
+    // ... (Cloud anchor methods handleInitGoogleCloudAnchorMode, handleUploadAnchor, handleDownloadAnchor unchanged) ...
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         try {
             Log.d(TAG, "Initializing Cloud Anchor mode...")
@@ -1244,10 +1243,15 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
+            // Unregister callback to prevent updates during destruction
             sceneView.onSessionUpdated = null
-            // FIX: Use session?.pause() to avoid unresolved reference
-            sceneView.session?.pause()
-        } catch(e: Exception) {}
+            
+            // CRITICAL FIX: Explicitly destroy sceneView to clean up ARCore session and GL resources 
+            // BEFORE removing views. This prevents the "Check failed: gpu_mode_" crash.
+            sceneView.destroy()
+        } catch(e: Exception) {
+            Log.e(TAG, "Error disposing SceneView", e)
+        }
 
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
@@ -1258,6 +1262,7 @@ class ArView(
         nodesMap.clear()
         anchorNodesMap.clear()
         
+        // This triggers surface destruction, so it must happen LAST.
         rootLayout.removeAllViews()
     }
 }
