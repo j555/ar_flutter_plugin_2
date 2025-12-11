@@ -40,6 +40,7 @@ import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
+import io.github.sceneview.node.PointCloudNode
 import io.github.sceneview.node.Node
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,12 +88,11 @@ class ArView(
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
-    // FIX 1: Add State Variable for Point Cloud Visibility
-    private var showPointCloud = false // Default to false or true depending on preference
+    // FIX: State to persist visibility across frames. Defaults to false (hidden).
+    private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
-    // FIX 2: REMOVED lastPointCloudFrame to prevent buffer leaks
-    // private var lastPointCloudFrame: Frame? = null 
+    // FIX: Removed lastPointCloudFrame to prevent memory leak/buffer exhaustion.
     
     private var minConfidence = 0.1f
     private var maxPoints = 500
@@ -106,8 +106,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity, handles "hide" logic
-            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compat
+            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity
+            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compatibility
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -127,9 +127,10 @@ class ArView(
             return
         }
 
+        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null)
+            result.success(null) // No frame available yet
             return
         }
 
@@ -141,6 +142,7 @@ class ArView(
             return
         }
 
+        // Convert normalized (0..1) to pixel coordinates
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
 
@@ -149,6 +151,7 @@ class ArView(
 
         for (hit in hits) {
             val trackable = hit.trackable
+            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
                 
@@ -239,13 +242,13 @@ class ArView(
         result.success(null) 
     }
 
-    // FIX 3: Correctly handle toggling via 'showPointCloud' or 'hidePointCloud'
+    // FIX: Properly toggle point cloud visibility and persist state
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
-            // Support both 'showPointCloud' (bool) and 'hidePointCloud' (bool, inverted)
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
             } else if (call.hasArgument("hide")) {
+                // Support legacy "hide" argument
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
 
@@ -263,7 +266,10 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
+                // Cache the frame for Hit Tests
                 currentFrame = frame
+
+                // Cache lighting
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -309,7 +315,7 @@ class ArView(
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
-                // Removed assignment to lastPointCloudFrame here
+                // FIX: Do NOT assign lastPointCloudFrame (prevents buffer leak)
 
                 val ids: IntBuffer = pointCloud.ids
                 val points: FloatBuffer = pointCloud.points
@@ -344,7 +350,7 @@ class ArView(
                     if (existing != null) {
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
-                        // FIX 4: Enforce visibility state on updates
+                        // FIX: Ensure visibility matches state
                         existing.isVisible = showPointCloud 
                     } else {
                         var node: PointCloudNode? = null
@@ -360,7 +366,7 @@ class ArView(
                             node.confidence = confidence
                         }
                         
-                        // FIX 5: Enforce visibility state on new/recycled nodes
+                        // FIX: Ensure visibility matches state for new/recycled nodes
                         node.isVisible = showPointCloud 
                         
                         node.position = Position(x, y, z)
@@ -543,12 +549,11 @@ class ArView(
                 }
             }
             
-            // Set initial state for point cloud if passed (defaults to hidden in handleInit if not specified)
+            // FIX: Set initial point cloud visibility from init args if provided
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
             } else {
-                // Default to false for cleaner init
-                showPointCloud = false
+                showPointCloud = false // Default off for cleaner look
             }
             
             result.success(null)
@@ -1260,6 +1265,9 @@ class ArView(
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
+        
+        // Stop session updates to prevent frame processing
+        sceneView.onSessionUpdated = null
         
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
