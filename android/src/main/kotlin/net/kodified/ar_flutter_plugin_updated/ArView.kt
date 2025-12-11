@@ -59,13 +59,16 @@ class ArView(
     private val activityLifecycle: Lifecycle,
     messenger: BinaryMessenger,
     id: Int,
-) : PlatformView {
+) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
     private val TAG: String = "ArView"
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
     private var worldOriginNode: Node? = null
+
+    // Internal LifecycleRegistry to manually control ARSceneView's lifecycle
+    private val lifecycleRegistry = LifecycleRegistry(this)
 
     private val rootLayout: ViewGroup = FrameLayout(context)
 
@@ -106,23 +109,20 @@ class ArView(
     private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
 
-    // --- CUSTOM LIFECYCLE MANAGEMENT ---
-    // We create an internal LifecycleOwner to control the ARSceneView.
-    // This allows us to destroy the ARSceneView when Flutter disposes the widget,
-    // avoiding the "Double Free" crash caused by the Activity lifecycle racing with Flutter.
-    private val customLifecycleOwner = object : LifecycleOwner {
-        override fun getLifecycle(): Lifecycle = customLifecycleRegistry
-    }
-    private val customLifecycleRegistry = LifecycleRegistry(customLifecycleOwner)
+    // --- LifecycleOwner Implementation ---
+    // Overriding the property 'lifecycle' as required by the interface
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
 
-    // Observer to mirror Activity events (Pause/Resume) to our custom lifecycle,
-    // BUT IGNORE DESTROY (we handle destroy manually in dispose).
-    private val activityLifecycleObserver = LifecycleEventObserver { _, event ->
-        if (isDestroyed) return@LifecycleEventObserver
+    // --- LifecycleEventObserver Implementation ---
+    override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+        if (isDestroyed) return
         
-        // Forward events, but don't auto-destroy. We want to destroy strictly on dispose().
+        // Mirror the activity's lifecycle to our internal registry.
+        // This ensures the camera pauses when the app is backgrounded.
+        // However, we handle DESTROY explicitly in dispose() to avoid race conditions.
         if (event != Lifecycle.Event.ON_DESTROY) {
-            customLifecycleRegistry.handleLifecycleEvent(event)
+            lifecycleRegistry.handleLifecycleEvent(event)
         }
     }
 
@@ -204,16 +204,18 @@ class ArView(
     }
 
     init {
-        // 1. Hook up the Activity Lifecycle Observer
-        activityLifecycle.addObserver(activityLifecycleObserver)
-
-        // 2. Initialize our Custom Lifecycle to CREATED
-        customLifecycleRegistry.currentState = Lifecycle.State.CREATED
+        // Sync our custom lifecycle with the activity's current state immediately
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        
+        // Listen for future activity lifecycle updates
+        activityLifecycle.addObserver(this)
 
         sceneView = ARSceneView(
             context = viewContext,
-            // 3. Pass OUR custom lifecycle. ARSceneView will obey this, not the Activity directly.
-            sharedLifecycle = customLifecycleRegistry, 
+            // Pass OUR custom lifecycle registry. 
+            // ARSceneView will obey this, not the Activity directly.
+            // This prevents "Double Free" because we control exactly when it gets DESTROYED.
+            sharedLifecycle = lifecycleRegistry, 
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -230,9 +232,11 @@ class ArView(
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
-
-        // 4. Move to RESUMED to start the camera (since we are in init, the view is ready)
-        customLifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        
+        // Move to RESUMED if activity is already resumed to start the camera
+        if (activityLifecycle.currentState == Lifecycle.State.RESUMED) {
+            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
+        }
 
         setupSceneViewListeners()
     }
@@ -624,7 +628,7 @@ class ArView(
         try {
             isSessionPaused = true
             // Manually control via registry
-            customLifecycleRegistry.currentState = Lifecycle.State.STARTED
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
             result.success(null)
         } catch (e: Exception) {
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
@@ -635,7 +639,7 @@ class ArView(
         try {
             isSessionPaused = false
             // Manually control via registry
-            customLifecycleRegistry.currentState = Lifecycle.State.RESUMED
+            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
             result.success(null)
         } catch (e: Exception) {
             result.error("ENABLE_CAMERA_ERROR", e.message, null)
@@ -1299,14 +1303,13 @@ class ArView(
         
         try {
             // STOP LISTENING TO ACTIVITY LIFECYCLE
-            activityLifecycle.removeObserver(activityLifecycleObserver)
+            activityLifecycle.removeObserver(this)
             
             // STOP RECEIVING UPDATES
             sceneView.onSessionUpdated = null
             
-            // TRIGGER DESTRUCTION VIA CUSTOM LIFECYCLE
-            // This is safer than calling destroy() manually as it aligns with the library's expectations
-            customLifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            // FORCE CLEAN DESTROY VIA CUSTOM LIFECYCLE
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
             
             // REMOVE VIEW
             rootLayout.removeAllViews()
