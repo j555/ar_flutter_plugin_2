@@ -48,6 +48,7 @@ import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import java.util.ArrayList
+import java.util.concurrent.ConcurrentLinkedQueue
 
 class ArView(
     context: Context,
@@ -78,10 +79,15 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // FIX: Cache the latest ARCore frame here. 
-    // This avoids calling session.update() manually (which steals buffers) 
-    // and avoids the 'Unresolved reference: arFrame' error.
-    private var currentFrame: Frame? = null
+    // Queue for hit test requests to be processed in the update loop
+    // This avoids holding onto Frame objects or calling session.update() manually
+    private data class PendingHitTest(
+        val x: Float, 
+        val y: Float, 
+        val nodeData: Map<String, Any>, 
+        val result: MethodChannel.Result
+    )
+    private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
     // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
@@ -230,13 +236,41 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
-            // Update the cached frame
-            currentFrame = frame
-            
             if (!isSessionPaused && !isDestroyed) {
                 latestLightEstimate = frame.lightEstimate
                 
-                // --- THROTTLE: ONLY PROCESS EVERY 10th FRAME ---
+                // --- 0. PROCESS PENDING HIT TESTS ---
+                // Process these immediately using the valid frame to avoid buffer starvation
+                while (!pendingHitTests.isEmpty()) {
+                    val request = pendingHitTests.poll() ?: break
+                    try {
+                        val hitResults = frame.hitTest(request.x, request.y)
+                        val hitResult = hitResults.firstOrNull { 
+                            val trackable = it.trackable 
+                            (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || 
+                            (trackable is com.google.ar.core.Point && trackable.trackingState == TrackingState.TRACKING)
+                        }
+
+                        if (hitResult != null) {
+                            val anchor = hitResult.createAnchor()
+                            val anchorNode = AnchorNode(sceneView.engine, anchor)
+                            sceneView.addChildNode(anchorNode)
+                            
+                            mainScope.launch {
+                                buildModelNode(request.nodeData)?.let { node ->
+                                    anchorNode.addChildNode(node)
+                                    request.result.success(true)
+                                } ?: request.result.success(false)
+                            }
+                        } else {
+                            request.result.error("HIT_TEST_FAILED", "No plane or point hit at position", null)
+                        }
+                    } catch (e: Exception) {
+                        request.result.error("HIT_TEST_ERROR", e.message, null)
+                    }
+                }
+
+                // --- THROTTLE: ONLY PROCESS HEAVY UPDATES EVERY 10th FRAME ---
                 frameCounter++
                 if (frameCounter % 10 != 0) return@sessionUpdated
 
@@ -867,39 +901,13 @@ class ArView(
                 result.error("INVALID_ARGUMENT", "Node data or screen position is null", null)
                 return
             }
-
-            mainScope.launch {
-                val node = buildModelNode(nodeData) ?: return@launch
-                
-                // FIX: Use current cached frame instead of manually calling session.update()
-                // This prevents the "Buffer Lost" and "Unable to acquire buffer item" crashes.
-                val frame = currentFrame
-                
-                if (frame == null) {
-                    result.error("SESSION_ERROR", "AR Frame is not ready", null)
-                    return@launch
-                }
-                
-                // Now frame is a valid ARCore Frame object, so hitTest will resolve safely
-                val hitResults = frame.hitTest(
-                    screenPosition["x"]?.toFloat() ?: 0f,
-                    screenPosition["y"]?.toFloat() ?: 0f
-                )
-
-                val hitResult = hitResults.firstOrNull { 
-                    val trackable = it.trackable 
-                    (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || (trackable is com.google.ar.core.Point && trackable.trackingState == TrackingState.TRACKING)
-                }
-                
-                if (hitResult != null) {
-                    val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
-                    anchorNode.addChildNode(node)
-                    sceneView.addChildNode(anchorNode)
-                    result.success(true)
-                } else {
-                    result.error("HIT_TEST_FAILED", "Could not create anchor at screen position", null)
-                }
-            }
+            
+            // Queue the request to be processed in the next session update (Main Thread)
+            // This avoids holding onto 'Frame' objects or calling 'session.update()' manually.
+            val x = screenPosition["x"]?.toFloat() ?: 0f
+            val y = screenPosition["y"]?.toFloat() ?: 0f
+            pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
+            
         } catch (e: Exception) {
             result.error("ADD_NODE_TO_SCREEN_ERROR", e.message, null)
         }
@@ -1247,16 +1255,17 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
+        // 1. Remove the lifecycle observer. 
+        // This stops the Activity/Fragment from triggering a second destroy if it dies after this call.
+        lifecycle.removeObserver(sceneView)
+
         try {
             sceneView.onSessionUpdated = null
-            currentFrame = null
             
-            // CRITICAL FIX: Only manually destroy sceneView if the activity is NOT destroying.
-            // If the activity is destroyed (lifecycle.currentState == DESTROYED), 
-            // ARSceneView's lifecycle observer has already handled the destruction.
-            // Explicitly calling destroy() again causes the 'Double Free' native crash.
-            // We use isAtLeast(CREATED) because DESTROYED is lower than CREATED.
-            if (lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+            // 2. Safe Destroy Check:
+            // Only destroy if the session is not null. If it is null, it means the lifecycle
+            // or another process has already destroyed it, and calling it again causes the native crash.
+            if (sceneView.session != null) {
                 sceneView.destroy()
             }
         } catch(e: Exception) {
@@ -1267,6 +1276,7 @@ class ArView(
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
+        pendingHitTests.clear()
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
         nodesMap.clear()
