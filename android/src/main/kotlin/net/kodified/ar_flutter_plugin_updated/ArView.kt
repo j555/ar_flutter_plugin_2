@@ -1,3 +1,4 @@
+// android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArView.kt
 package net.kodified.ar_flutter_plugin_updated
 
 import android.app.Activity
@@ -87,11 +88,11 @@ class ArView(
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
-    // FIX: State to persist visibility across frames. Defaults to false (hidden).
+    // VISIBILITY STATE
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
-    // FIX: Removed lastPointCloudFrame to prevent memory leak/buffer exhaustion.
+    // REMOVED: lastPointCloudFrame (Fixes Memory Leak)
     
     private var minConfidence = 0.1f
     private var maxPoints = 500
@@ -105,8 +106,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity
-            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compatibility
+            "showPointCloud" -> handleShowPointCloud(call, result)
+            "hidePointCloud" -> handleShowPointCloud(call, result)
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -126,10 +127,9 @@ class ArView(
             return
         }
 
-        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null) // No frame available yet
+            result.success(null)
             return
         }
 
@@ -141,7 +141,6 @@ class ArView(
             return
         }
 
-        // Convert normalized (0..1) to pixel coordinates
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
 
@@ -150,7 +149,6 @@ class ArView(
 
         for (hit in hits) {
             val trackable = hit.trackable
-            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
                 
@@ -241,17 +239,14 @@ class ArView(
         result.success(null) 
     }
 
-    // FIX: Properly toggle point cloud visibility and persist state
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
             } else if (call.hasArgument("hide")) {
-                // Support legacy "hide" argument
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
 
-            // Apply immediately to existing nodes
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
@@ -265,10 +260,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // Cache the frame for Hit Tests
                 currentFrame = frame
-
-                // Cache lighting
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -314,7 +306,8 @@ class ArView(
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
-                // FIX: Do NOT assign lastPointCloudFrame (prevents buffer leak)
+                
+                // NO REF HELD (Fixes Leak)
 
                 val ids: IntBuffer = pointCloud.ids
                 val points: FloatBuffer = pointCloud.points
@@ -349,7 +342,6 @@ class ArView(
                     if (existing != null) {
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
-                        // FIX: Ensure visibility matches state
                         existing.isVisible = showPointCloud 
                     } else {
                         var node: PointCloudNode? = null
@@ -365,7 +357,6 @@ class ArView(
                             node.confidence = confidence
                         }
                         
-                        // FIX: Ensure visibility matches state for new/recycled nodes
                         node.isVisible = showPointCloud 
                         
                         node.position = Position(x, y, z)
@@ -548,11 +539,10 @@ class ArView(
                 }
             }
             
-            // FIX: Set initial point cloud visibility from init args if provided
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
             } else {
-                showPointCloud = false // Default off for cleaner look
+                showPointCloud = false
             }
             
             result.success(null)
@@ -1265,9 +1255,7 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // Stop session updates to prevent frame processing
-        sceneView.onSessionUpdated = null
-        
+        sceneView.onSessionUpdated = null // Stop updates
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
