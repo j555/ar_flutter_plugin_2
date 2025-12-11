@@ -79,7 +79,7 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // FIX: Queue for hit test requests to be processed in the update loop.
+    // Queue for hit test requests to be processed in the update loop.
     // This avoids holding onto Frame objects or calling session.update() manually,
     // which fixes the "Unable to acquire buffer" crash.
     private data class PendingHitTest(
@@ -1255,15 +1255,19 @@ class ArView(
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
-        
+
         try {
+            // Stop receiving updates
             sceneView.onSessionUpdated = null
             
-            // FIX: Only destroy if the session is not null.
-            // If the activity was destroyed, SceneView's internal lifecycle observer 
-            // might have already cleaned up. Checking for session != null prevents 
-            // the double-free native crash.
-            if (sceneView.session != null) {
+            // Pause the session to stop camera access immediately
+            sceneView.session?.pause()
+            
+            // FIX: Only destroy the SceneView if the Activity is NOT finishing.
+            // If the Activity IS finishing, the Lifecycle observer within ARSceneView 
+            // will handle the destruction automatically. Calling it manually here causes 
+            // the "Double Free" / "Panic" native crash because ARCore is destroyed twice.
+            if (!activity.isFinishing) {
                 sceneView.destroy()
             }
         } catch(e: Exception) {
