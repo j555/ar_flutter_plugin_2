@@ -87,8 +87,13 @@ class ArView(
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
+    // FIX 1: Add State Variable for Point Cloud Visibility
+    private var showPointCloud = false // Default to false or true depending on preference
+
     private var lastPointCloudTimestamp: Long? = null
-    private var lastPointCloudFrame: Frame? = null
+    // FIX 2: REMOVED lastPointCloudFrame to prevent buffer leaks
+    // private var lastPointCloudFrame: Frame? = null 
+    
     private var minConfidence = 0.1f
     private var maxPoints = 500
     private var frameCounter = 0
@@ -101,7 +106,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "hidePointCloud" -> handleHidePointCloud(call, result)
+            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity, handles "hide" logic
+            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compat
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -110,22 +116,20 @@ class ArView(
             "snapshot" -> handleSnapshot(result)
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
-            "hitTest" -> handleHitTest(call, result) // [FIXED]
+            "hitTest" -> handleHitTest(call, result)
             else -> result.notImplemented()
         }
     }
 
-    // [FIXED] Hit Test Implementation using cached currentFrame
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("SESSION_ERROR", "AR Session destroyed", null)
             return
         }
 
-        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null) // No frame available yet
+            result.success(null)
             return
         }
 
@@ -137,7 +141,6 @@ class ArView(
             return
         }
 
-        // Convert normalized (0..1) to pixel coordinates
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
 
@@ -146,7 +149,6 @@ class ArView(
 
         for (hit in hits) {
             val trackable = hit.trackable
-            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
                 
@@ -237,11 +239,19 @@ class ArView(
         result.success(null) 
     }
 
-    private fun handleHidePointCloud(call: MethodCall, result: MethodChannel.Result) {
+    // FIX 3: Correctly handle toggling via 'showPointCloud' or 'hidePointCloud'
+    private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
-            val hide = call.argument<Boolean>("hide") ?: true
+            // Support both 'showPointCloud' (bool) and 'hidePointCloud' (bool, inverted)
+            if (call.hasArgument("showPointCloud")) {
+                showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
+            } else if (call.hasArgument("hide")) {
+                showPointCloud = !(call.argument<Boolean>("hide") ?: false)
+            }
+
+            // Apply immediately to existing nodes
             pointCloudNodes.forEach { node ->
-                node.isVisible = !hide
+                node.isVisible = showPointCloud
             }
             result.success(null)
         } catch (e: Exception) {
@@ -253,10 +263,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // [FIX] Cache the frame for Hit Tests
                 currentFrame = frame
-
-                // [FIX] Cache lighting
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -302,7 +309,7 @@ class ArView(
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
-                lastPointCloudFrame = frame
+                // Removed assignment to lastPointCloudFrame here
 
                 val ids: IntBuffer = pointCloud.ids
                 val points: FloatBuffer = pointCloud.points
@@ -337,6 +344,8 @@ class ArView(
                     if (existing != null) {
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
+                        // FIX 4: Enforce visibility state on updates
+                        existing.isVisible = showPointCloud 
                     } else {
                         var node: PointCloudNode? = null
                         if (pointCloudNodePool.isNotEmpty()) {
@@ -349,8 +358,10 @@ class ArView(
                         } else {
                             node.id = id
                             node.confidence = confidence
-                            node.isVisible = true 
                         }
+                        
+                        // FIX 5: Enforce visibility state on new/recycled nodes
+                        node.isVisible = showPointCloud 
                         
                         node.position = Position(x, y, z)
                         pointCloudNodes.add(node)
@@ -531,6 +542,15 @@ class ArView(
                     rootLayout.addView(handMotionLayout)
                 }
             }
+            
+            // Set initial state for point cloud if passed (defaults to hidden in handleInit if not specified)
+            if (call.hasArgument("showPointCloud")) {
+                showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
+            } else {
+                // Default to false for cleaner init
+                showPointCloud = false
+            }
+            
             result.success(null)
         } catch (e: Exception) {
             result.error("AR_VIEW_ERROR", e.message, null)
