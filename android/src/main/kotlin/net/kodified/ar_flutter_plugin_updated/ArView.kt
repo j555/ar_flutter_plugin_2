@@ -1242,7 +1242,7 @@ class ArView(
         sceneView.onSessionUpdated = null 
         
         // 2. Pause the session immediately (SceneView handles the rest)
-        sceneView.pause()
+        sceneView.session?.pause()
         
         // 3. Clear Listeners
         sessionChannel.setMethodCallHandler(null)
