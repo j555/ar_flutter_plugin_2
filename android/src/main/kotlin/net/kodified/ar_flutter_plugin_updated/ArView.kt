@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleObserver
 import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -92,7 +93,6 @@ class ArView(
     )
     private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
-    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
@@ -406,7 +406,6 @@ class ArView(
                     pointCloud.release() 
                 }
             } finally {
-                // IMPORTANT: Release guard so next frame can be processed
                 isProcessingFrame = false
             }
         }
@@ -1264,28 +1263,19 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
+            // Remove from lifecycle to stop internal handling
+            try {
+               lifecycle.removeObserver(sceneView as LifecycleObserver)
+            } catch(e: Exception) {
+               Log.w(TAG, "Could not remove lifecycle observer: ${e.message}")
+            }
+            
             sceneView.onSessionUpdated = null
             
-            // Pausing the session directly avoids the missing resume() method error
-            if (!activity.isFinishing) {
-                try {
-                    sceneView.session?.pause()
-                } catch(e: Exception) {
-                     Log.e(TAG, "Error pausing session", e)
-                }
-            }
-
+            // Remove view from layout to stop rendering
             rootLayout.removeAllViews()
             
-            // Only destroy manually if we are certain the activity isn't already tearing it down.
-            // This prevents the Double Free crash.
-            if (!activity.isFinishing) {
-                 try {
-                     sceneView.destroy()
-                 } catch (e: Exception) {
-                     Log.e(TAG, "Error destroying SceneView", e)
-                 }
-            }
+            // NO manual destroy. Rely on view detachment/lifecycle removal.
             
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
