@@ -88,6 +88,10 @@ class ArView(
     @Volatile
     private var isProcessingFrame = false
 
+    // FIX 1: Control flag for continuous center hit tracking
+    @Volatile
+    private var isCenterHitTrackingEnabled = false
+
     private val detectedPlanes = mutableSetOf<Plane>()
     
     private data class PendingHitTest(
@@ -119,8 +123,6 @@ class ArView(
         if (isDestroyed) return
         
         // Mirror the activity's lifecycle to our internal registry.
-        // This ensures the camera pauses when the app is backgrounded.
-        // However, we handle DESTROY explicitly in dispose() to avoid race conditions.
         if (event != Lifecycle.Event.ON_DESTROY) {
             lifecycleRegistry.handleLifecycleEvent(event)
         }
@@ -146,6 +148,16 @@ class ArView(
             "disableCamera" -> handleDisableCamera(result)
             "enableCamera" -> handleEnableCamera(result)
             "hitTest" -> handleHitTest(call, result)
+            
+            // FIX 2: Implement the missing method to start the live hit-test loop
+            "startCenterHitTracking" -> {
+                isCenterHitTrackingEnabled = true
+                result.success(null)
+            }
+            "stopCenterHitTracking" -> {
+                isCenterHitTrackingEnabled = false
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
     }
@@ -213,8 +225,6 @@ class ArView(
         sceneView = ARSceneView(
             context = viewContext,
             // Pass OUR custom lifecycle registry. 
-            // ARSceneView will obey this, not the Activity directly.
-            // This prevents "Double Free" because we control exactly when it gets DESTROYED.
             sharedLifecycle = lifecycleRegistry, 
             sessionConfiguration = { session, config ->
                 config.apply {
@@ -323,26 +333,35 @@ class ArView(
                 }
 
                 // --- 1. CENTER HIT TEST ---
-                try {
-                    if (sceneView.width > 0 && sceneView.height > 0) {
-                        val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
-                        for(hit in hits) {
-                            val trackable = hit.trackable
-                            if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
-                                 val hitData = serializeHitResult(hit)
-                                 val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
-                                 val payload = mapOf(
-                                     "hit" to hitData,
-                                     "cameraPose" to cameraPose
-                                 )
-                                 mainScope.launch { 
-                                     if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
-                                 }
-                                 break 
+                // FIX 3: Only run this heavy logic if explicitly enabled and tracking is stable
+                if (isCenterHitTrackingEnabled && session.camera.trackingState == TrackingState.TRACKING) { 
+                    try {
+                        if (sceneView.width > 0 && sceneView.height > 0) {
+                            // Hit test at the center of the screen
+                            val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
+                            for(hit in hits) {
+                                val trackable = hit.trackable
+                                // Only process Plane hits whose pose is inside the plane polygon
+                                if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
+                                     val hitData = serializeHitResult(hit)
+                                     // Camera Pose is needed for distance and angle calculations
+                                     val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
+                                     val payload = mapOf(
+                                         "hit" to hitData,
+                                         "cameraPose" to cameraPose
+                                     )
+                                     mainScope.launch { 
+                                         // Invoke the Dart method to push data to the UI for calculation
+                                         if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
+                                     }
+                                     break 
+                                }
                             }
                         }
+                    } catch(e: Exception) { 
+                        // Failures here are normal if AR is unstable. Log locally if needed.
                     }
-                } catch(e: Exception) { }
+                }
 
                 // --- 2. PLANE UPDATES ---
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -1050,11 +1069,11 @@ class ArView(
 
             if (anchorName == null) {
                 Log.e(TAG, "Error: Anchor name missing")
+                Log.d(TAG, "Available anchors: ${anchorNodesMap.keys}")
                 result.error("INVALID_ARGUMENT", "Anchor name is required", null)
                 return
             }
 
-            Log.d(TAG, "Checking ability to host Cloud Anchor...")
             if (!session.canHostCloudAnchor(sceneView.cameraNode)) {
                 Log.e(TAG, "Error: Insufficient visual data to host Cloud Anchor")
                 result.error("HOSTING_ERROR", "Insufficient visual data to host", null)
@@ -1069,7 +1088,6 @@ class ArView(
                 return
             }
 
-            Log.d(TAG, "Creating CloudAnchorNode...")
             val cloudAnchorNode = CloudAnchorNode(sceneView.engine, anchorNode.anchor!!)
             
             Log.d(TAG, "Starting Cloud Anchor hosting...")
