@@ -79,8 +79,9 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // Queue for hit test requests to be processed in the update loop
-    // This avoids holding onto Frame objects or calling session.update() manually
+    // FIX: Queue for hit test requests to be processed in the update loop.
+    // This avoids holding onto Frame objects or calling session.update() manually,
+    // which fixes the "Unable to acquire buffer" crash.
     private data class PendingHitTest(
         val x: Float, 
         val y: Float, 
@@ -1255,16 +1256,13 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // 1. Remove the lifecycle observer. 
-        // This stops the Activity/Fragment from triggering a second destroy if it dies after this call.
-        lifecycle.removeObserver(sceneView)
-
         try {
             sceneView.onSessionUpdated = null
             
-            // 2. Safe Destroy Check:
-            // Only destroy if the session is not null. If it is null, it means the lifecycle
-            // or another process has already destroyed it, and calling it again causes the native crash.
+            // FIX: Only destroy if the session is not null.
+            // If the activity was destroyed, SceneView's internal lifecycle observer 
+            // might have already cleaned up. Checking for session != null prevents 
+            // the double-free native crash.
             if (sceneView.session != null) {
                 sceneView.destroy()
             }
