@@ -182,10 +182,9 @@ class ArView(
     }
 
     init {
-        // We pass lifecycle again to let ARSceneView handle initialization.
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle, 
+            sharedLifecycle = lifecycle,
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -249,7 +248,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
             
-            // STRICT THROTTLING to prevent ImageReader buffer overflow
+            // STRICT THROTTLING
             if (isProcessingFrame) return@sessionUpdated
             isProcessingFrame = true
             
@@ -586,7 +585,6 @@ class ArView(
             
             result.success(null)
         } catch (e: Exception) {
-            Log.e(TAG, "Init Exception", e)
             result.error("AR_VIEW_ERROR", e.message, null)
         }
     }
@@ -914,7 +912,6 @@ class ArView(
                 return
             }
             
-            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1267,30 +1264,28 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
-            // STOP receiving updates
             sceneView.onSessionUpdated = null
             
-            // Remove view from layout to stop rendering
-            rootLayout.removeAllViews()
-            
-            // Check if activity is still running before manual cleanup to avoid Double Free
+            // Pausing the session directly avoids the missing resume() method error
             if (!activity.isFinishing) {
-                // Manually pause the session if we can access it
                 try {
                     sceneView.session?.pause()
                 } catch(e: Exception) {
-                    Log.e(TAG, "Error pausing AR session", e)
-                }
-                
-                // Attempt manual destroy only if the activity is alive
-                try {
-                     sceneView.destroy()
-                } catch(e: Exception) {
-                     Log.e(TAG, "Error destroying SceneView", e)
+                     Log.e(TAG, "Error pausing session", e)
                 }
             }
-            // If activity.isFinishing, we do NOT call destroy() because the LifecycleObserver 
-            // attached to the view will do it for us, preventing the native crash.
+
+            rootLayout.removeAllViews()
+            
+            // Only destroy manually if we are certain the activity isn't already tearing it down.
+            // This prevents the Double Free crash.
+            if (!activity.isFinishing) {
+                 try {
+                     sceneView.destroy()
+                 } catch (e: Exception) {
+                     Log.e(TAG, "Error destroying SceneView", e)
+                 }
+            }
             
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
