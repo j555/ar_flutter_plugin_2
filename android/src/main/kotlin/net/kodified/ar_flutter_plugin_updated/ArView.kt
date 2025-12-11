@@ -23,7 +23,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
-import io.github.sceneview.ar.arcore.arFrame
 import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
@@ -79,6 +78,9 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
+    // Cache the latest ARCore frame here to avoid calling session.update() manually
+    private var currentFrame: Frame? = null
+
     // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
@@ -112,7 +114,6 @@ class ArView(
         }
     }
 
-    // ... (serializePlane and handleHitTest are unchanged) ...
     private fun serializePlane(plane: Plane): Map<String, Any> {
         val pose = plane.centerPose
         val matrix = FloatArray(16)
@@ -182,7 +183,6 @@ class ArView(
         setupSceneViewListeners()
     }
 
-    // ... (handleGetLightEstimate, handleShowFeaturePoints, handleShowPointCloud unchanged) ...
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("VIEW_DESTROYED", "View disposed", null)
@@ -228,13 +228,17 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
+            // Update the cached frame
+            currentFrame = frame
+            
             if (!isSessionPaused && !isDestroyed) {
                 latestLightEstimate = frame.lightEstimate
                 
-                // THROTTLE: Only process every 10th frame to reduce load
+                // --- THROTTLE: ONLY PROCESS EVERY 10th FRAME ---
                 frameCounter++
                 if (frameCounter % 10 != 0) return@sessionUpdated
 
+                // --- 1. CENTER HIT TEST (PUSH TO FLUTTER) ---
                 try {
                     val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
                     var sentHit = false
@@ -347,6 +351,7 @@ class ArView(
                             }
                             
                             node.isVisible = showPointCloud 
+                            
                             node.position = Position(x, y, z)
                             pointCloudNodes.add(node)
                             sceneView.addChildNode(node)
@@ -388,7 +393,6 @@ class ArView(
         }
     }
 
-    // ... (Helper methods for PointCloud, projection matrix, poses, init, camera enable/disable, buildModelNode, addNode/removeNode/transformNode/host/resolve/removeAnchor/addNodeToPlaneAnchor - unchanged) ...
     private fun getPointCloudModelInstance(): ModelInstance? {
         if (pointCloudModelInstances.isEmpty()) {
             pointCloudModelInstances = sceneView.modelLoader.createInstancedModel(
@@ -865,16 +869,15 @@ class ArView(
             mainScope.launch {
                 val node = buildModelNode(nodeData) ?: return@launch
                 
-                // CRITICAL FIX: Do NOT call session.update() manually here.
-                // It steals the buffer from the display loop and causes ImageReader exhaustion and crashes.
-                // Use the cached frame from the SceneView.
-                val frame = sceneView.arFrame
+                // FIX: Use current cached frame instead of manually calling session.update()
+                val frame = currentFrame
                 
                 if (frame == null) {
                     result.error("SESSION_ERROR", "AR Frame is not ready", null)
                     return@launch
                 }
                 
+                // Now frame is a valid ARCore Frame object, so hitTest will resolve safely
                 val hitResults = frame.hitTest(
                     screenPosition["x"]?.toFloat() ?: 0f,
                     screenPosition["y"]?.toFloat() ?: 0f
@@ -942,7 +945,6 @@ class ArView(
         }
     }
 
-    // ... (Cloud anchor methods handleInitGoogleCloudAnchorMode, handleUploadAnchor, handleDownloadAnchor unchanged) ...
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         try {
             Log.d(TAG, "Initializing Cloud Anchor mode...")
@@ -1243,11 +1245,9 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
-            // Unregister callback to prevent updates during destruction
             sceneView.onSessionUpdated = null
-            
-            // CRITICAL FIX: Explicitly destroy sceneView to clean up ARCore session and GL resources 
-            // BEFORE removing views. This prevents the "Check failed: gpu_mode_" crash.
+            // Explicitly destroy the SceneView to release GL resources and AR Session 
+            // BEFORE the surface is destroyed by removeAllViews()
             sceneView.destroy()
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
@@ -1262,7 +1262,6 @@ class ArView(
         nodesMap.clear()
         anchorNodesMap.clear()
         
-        // This triggers surface destruction, so it must happen LAST.
         rootLayout.removeAllViews()
     }
 }
