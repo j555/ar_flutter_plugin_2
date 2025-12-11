@@ -79,12 +79,17 @@ class ArView(
     private val detectedPlanes = mutableSetOf<Plane>()
     private var currentFrame: Frame? = null
 
+    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
+    
+    // VISIBILITY STATE: Defaults to false (hidden)
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
+    // REMOVED: lastPointCloudFrame (Fixed Memory Leak)
+    
     private var minConfidence = 0.1f
     private var maxPoints = 500
     private var frameCounter = 0
@@ -95,8 +100,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "showPointCloud" -> handleShowPointCloud(call, result)
-            "hidePointCloud" -> handleShowPointCloud(call, result)
+            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity
+            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compatibility
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -110,13 +115,15 @@ class ArView(
         }
     }
 
+    // Optimization Helper - Serialize Pose without creating Anchor (Prevents Memory Leak)
     private fun serializePlane(plane: Plane): Map<String, Any> {
         val pose = plane.centerPose
         val matrix = FloatArray(16)
         pose.toMatrix(matrix, 0)
+        
         return mapOf(
-            "type" to 0,
-            "identifier" to plane.hashCode().toString(),
+            "type" to 0, // Plane
+            "identifier" to plane.hashCode().toString(), // Use Hash as ID
             "centerPose" to matrix.map { it.toDouble() },
             "extent" to listOf(plane.extentX.toDouble(), plane.extentZ.toDouble())
         )
@@ -127,32 +134,38 @@ class ArView(
             result.error("SESSION_ERROR", "AR Session destroyed", null)
             return
         }
+
+        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null)
+            result.success(null) // No frame available yet
             return
         }
+
         val x = call.argument<Double>("x")?.toFloat()
         val y = call.argument<Double>("y")?.toFloat()
+
         if (x == null || y == null) {
-            result.error("INVALID_ARGUMENT", "x/y required", null)
+            result.error("INVALID_ARGUMENT", "x and y are required", null)
             return
         }
-        
-        // Convert to pixels
+
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
-        val hits = frame.hitTest(screenX, screenY)
+
+        val hits: List<HitResult> = frame.hitTest(screenX, screenY)
         val serializedHits = ArrayList<Map<String, Any>>()
-        
+
         for (hit in hits) {
             val trackable = hit.trackable
-            // Only return Plane hits or Oriented Points to avoid garbage
+            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
+                
                 serializedHits.add(serializeHitResult(hit))
             }
         }
+
         result.success(serializedHits)
     }
     
@@ -236,7 +249,6 @@ class ArView(
         result.success(null) 
     }
 
-    // FIX: Properly toggle point cloud visibility and persist state
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
             if (call.hasArgument("showPointCloud")) {
@@ -260,13 +272,10 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
-                // Cache the frame for Hit Tests
                 currentFrame = frame
-
-                // Cache lighting
                 latestLightEstimate = frame.lightEstimate
-
-                // THROTTLE UPDATES: Skip frame processing if not 3rd frame to reduce bridge load.
+                
+                // THROTTLING: Skip frame processing to reduce load (30fps -> 10fps for updates)
                 frameCounter++
                 if (frameCounter % 3 != 0) return@sessionUpdated
 
@@ -274,7 +283,6 @@ class ArView(
                 for (plane in updatedPlanes) {
                     when (plane.trackingState) {
                         TrackingState.TRACKING -> {
-                            // FIX: Use lightweight serializePlane instead of createAnchor
                             val planeMap = serializePlane(plane)
                             if (!detectedPlanes.contains(plane)) {
                                 detectedPlanes.add(plane)
@@ -303,74 +311,75 @@ class ArView(
                     }
                 }
 
-                // Point Cloud Logic
+                // POINT CLOUD LOGIC WITH SAFETY & LEAK FIX
                 val pointCloud = frame.acquirePointCloud()
-                if (pointCloud.timestamp == lastPointCloudTimestamp) {
-                    pointCloud.release()
-                    return@sessionUpdated
-                }
-
-                lastPointCloudTimestamp = pointCloud.timestamp
-                // FIX: Do NOT assign lastPointCloudFrame (prevents buffer leak)
-
-                val ids: IntBuffer = pointCloud.ids
-                val points: FloatBuffer = pointCloud.points
-                val pointCount = ids.limit()
-
-                val currentIdSet = HashSet<Int>()
-                for(i in 0 until pointCount) currentIdSet.add(ids[i])
-
-                val iterator = pointCloudNodes.iterator()
-                while (iterator.hasNext()) {
-                    val node = iterator.next()
-                    if (!currentIdSet.contains(node.id)) {
-                        sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node)
-                        iterator.remove()
+                try {
+                    if (pointCloud.timestamp == lastPointCloudTimestamp) {
+                        // Point cloud hasn't changed, release and return
+                        return@sessionUpdated
                     }
-                }
+                    lastPointCloudTimestamp = pointCloud.timestamp
 
-                for (i in 0 until pointCount) {
-                    if (pointCloudNodes.size >= maxPoints) break
-                    
-                    val id = ids[i]
-                    val pIdx = i * 4
-                    val x = points[pIdx]
-                    val y = points[pIdx + 1]
-                    val z = points[pIdx + 2]
-                    val confidence = points[pIdx + 3]
+                    val ids: IntBuffer = pointCloud.ids
+                    val points: FloatBuffer = pointCloud.points
+                    val pointCount = ids.limit()
 
-                    if (confidence < minConfidence) continue
+                    val currentIdSet = HashSet<Int>()
+                    for(i in 0 until pointCount) currentIdSet.add(ids[i])
 
-                    val existing = pointCloudNodes.firstOrNull { it.id == id }
-                    if (existing != null) {
-                        existing.position = Position(x, y, z)
-                        existing.confidence = confidence
-                        // FIX: Ensure visibility matches state
-                        existing.isVisible = showPointCloud 
-                    } else {
-                        var node: PointCloudNode? = null
-                        if (pointCloudNodePool.isNotEmpty()) {
-                            node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
+                    val iterator = pointCloudNodes.iterator()
+                    while (iterator.hasNext()) {
+                        val node = iterator.next()
+                        if (!currentIdSet.contains(node.id)) {
+                            sceneView.removeChildNode(node)
+                            pointCloudNodePool.add(node)
+                            iterator.remove()
                         }
+                    }
+
+                    for (i in 0 until pointCount) {
+                        if (pointCloudNodes.size >= maxPoints) break
                         
-                        if (node == null) {
-                            val modelInst = getPointCloudModelInstance() ?: break
-                            node = PointCloudNode(modelInst, id, confidence)
+                        val id = ids[i]
+                        val pIdx = i * 4
+                        val x = points[pIdx]
+                        val y = points[pIdx + 1]
+                        val z = points[pIdx + 2]
+                        val confidence = points[pIdx + 3]
+
+                        if (confidence < minConfidence) continue
+
+                        val existing = pointCloudNodes.firstOrNull { it.id == id }
+                        if (existing != null) {
+                            existing.position = Position(x, y, z)
+                            existing.confidence = confidence
+                            // Enforce visibility
+                            existing.isVisible = showPointCloud 
                         } else {
-                            node.id = id
-                            node.confidence = confidence
+                            var node: PointCloudNode? = null
+                            if (pointCloudNodePool.isNotEmpty()) {
+                                node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
+                            }
+                            
+                            if (node == null) {
+                                val modelInst = getPointCloudModelInstance() ?: break
+                                node = PointCloudNode(modelInst, id, confidence)
+                            } else {
+                                node.id = id
+                                node.confidence = confidence
+                            }
+                            
+                            node.isVisible = showPointCloud 
+                            
+                            node.position = Position(x, y, z)
+                            pointCloudNodes.add(node)
+                            sceneView.addChildNode(node)
                         }
-                        
-                        // FIX: Ensure visibility matches state for new/recycled nodes
-                        node.isVisible = showPointCloud 
-                        
-                        node.position = Position(x, y, z)
-                        pointCloudNodes.add(node)
-                        sceneView.addChildNode(node)
                     }
+                } finally {
+                    // CRITICAL: Always release point cloud to prevent buffer starvation
+                    pointCloud.release()
                 }
-                pointCloud.release()
             }
         }
 
@@ -545,11 +554,10 @@ class ArView(
                 }
             }
             
-            // FIX: Set initial point cloud visibility from init args if provided
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
             } else {
-                showPointCloud = false // Default off for cleaner look
+                showPointCloud = false // Default off
             }
             
             result.success(null)
@@ -706,7 +714,7 @@ class ArView(
             nodesMap[nodeName]?.let { node ->
                 node.parent?.removeChildNode(node)
                 sceneView.removeChildNode(node)
-                // node.destroy() // REMOVED (Fixes compilation error)
+                // Removed node.destroy() as per SceneView lifecycle handling
                 nodesMap.remove(nodeName)
                 result.success(nodeName)
             } ?: run {
@@ -1262,19 +1270,25 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
+        // 1. Stop Listeners
+        sceneView.onSessionUpdated = null 
+        
+        // 2. Pause Session to stop frames
         try {
-            sceneView.onSessionUpdated = null
             sceneView.session?.pause()
         } catch(e: Exception) {}
 
+        // 3. Clear Channels
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        pointCloudNodes.clear()
+        // 4. Release Memory
         pointCloudNodePool.clear()
+        pointCloudNodes.clear()
         nodesMap.clear()
         anchorNodesMap.clear()
+        
         currentFrame = null
         
         rootLayout.removeAllViews()
