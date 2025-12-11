@@ -13,8 +13,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleObserver
-import androidx.lifecycle.OnLifecycleEvent
 import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -52,22 +50,6 @@ import java.nio.IntBuffer
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
 
-// Custom LifecycleObserver for debugging
-class ArViewLifecycleObserver(private val tag: String) : LifecycleObserver {
-    @OnLifecycleEvent(Lifecycle.Event.ON_CREATE)
-    fun onCreate() { Log.d(tag, "Lifecycle: ON_CREATE") }
-    @OnLifecycleEvent(Lifecycle.Event.ON_START)
-    fun onStart() { Log.d(tag, "Lifecycle: ON_START") }
-    @OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
-    fun onResume() { Log.d(tag, "Lifecycle: ON_RESUME") }
-    @OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-    fun onPause() { Log.d(tag, "Lifecycle: ON_PAUSE") }
-    @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
-    fun onStop() { Log.d(tag, "Lifecycle: ON_STOP") }
-    @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-    fun onDestroy() { Log.d(tag, "Lifecycle: ON_DESTROY") }
-}
-
 class ArView(
     context: Context,
     private val activity: Activity,
@@ -76,7 +58,7 @@ class ArView(
     id: Int,
 ) : PlatformView {
 
-    private val TAG: String = "ArViewDebug"
+    private val TAG: String = "ArView"
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
@@ -96,6 +78,10 @@ class ArView(
     
     @Volatile
     private var isDestroyed = false
+    
+    // GUARD: Prevents frame processing overlap to stop ImageReader buffer overflow
+    @Volatile
+    private var isProcessingFrame = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
@@ -107,6 +93,7 @@ class ArView(
     )
     private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
+    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
@@ -115,14 +102,10 @@ class ArView(
     private var lastPointCloudTimestamp: Long? = null
     private var minConfidence = 0.1f
     private var maxPoints = 500
-    private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
-
-    private val debugObserver = ArViewLifecycleObserver(TAG)
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) {
-            Log.w(TAG, "MethodCallHandler ignored: View is destroyed")
             result.error("DESTROYED", "View is destroyed", null)
             return@MethodCallHandler
         }
@@ -199,14 +182,12 @@ class ArView(
     }
 
     init {
-        Log.d(TAG, "Initializing ArView. Current Lifecycle State: ${lifecycle.currentState}")
-        lifecycle.addObserver(debugObserver)
-
+        // FIX: Pass null for sharedLifecycle to take MANUAL control of resume/pause/destroy.
+        // This prevents the automatic LifecycleObserver from racing with our dispose() logic.
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle,
+            sharedLifecycle = null, 
             sessionConfiguration = { session, config ->
-                Log.d(TAG, "AR Session Configured")
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     depthMode = Config.DepthMode.DISABLED 
@@ -218,7 +199,13 @@ class ArView(
         )
 
         rootLayout.addView(sceneView)
-        Log.d(TAG, "ARSceneView added to root layout")
+        
+        // Manually resume because we didn't pass a lifecycle
+        try {
+            sceneView.resume()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resuming session", e)
+        }
 
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
@@ -256,183 +243,182 @@ class ArView(
             } else if (call.hasArgument("hide")) {
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
-            Log.d(TAG, "Show Point Cloud: $showPointCloud")
 
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
             result.success(null)
         } catch (e: Exception) {
-            Log.e(TAG, "Error showing point cloud", e)
             result.error("POINT_CLOUD_ERROR", e.message, null)
         }
     }
 
     private fun setupSceneViewListeners() {
-        Log.d(TAG, "Setting up SceneView Listeners")
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
-
-            latestLightEstimate = frame.lightEstimate
             
-            // --- 0. PROCESS PENDING HIT TESTS ---
-            while (!pendingHitTests.isEmpty()) {
-                val request = pendingHitTests.poll() ?: break
-                if (isDestroyed) break
+            // FIX: STRICT THROTTLING
+            // If we are currently processing a frame, DROP this one immediately.
+            // This prevents the "Unable to acquire buffer" backlog.
+            if (isProcessingFrame) return@sessionUpdated
+            isProcessingFrame = true
+            
+            try {
+                latestLightEstimate = frame.lightEstimate
+                
+                // --- 0. PROCESS PENDING HIT TESTS ---
+                while (!pendingHitTests.isEmpty()) {
+                    val request = pendingHitTests.poll() ?: break
+                    if (isDestroyed) break
+                    try {
+                        val hitResults = frame.hitTest(request.x, request.y)
+                        val hitResult = hitResults.firstOrNull { 
+                            val trackable = it.trackable 
+                            (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || 
+                            (trackable is com.google.ar.core.Point && trackable.trackingState == TrackingState.TRACKING)
+                        }
+
+                        if (hitResult != null) {
+                            val anchor = hitResult.createAnchor()
+                            val anchorNode = AnchorNode(sceneView.engine, anchor)
+                            sceneView.addChildNode(anchorNode)
+                            
+                            mainScope.launch {
+                                buildModelNode(request.nodeData)?.let { node ->
+                                    anchorNode.addChildNode(node)
+                                    request.result.success(true)
+                                } ?: request.result.success(false)
+                            }
+                        } else {
+                            request.result.error("HIT_TEST_FAILED", "No plane or point hit at position", null)
+                        }
+                    } catch (e: Exception) {
+                        request.result.error("HIT_TEST_ERROR", e.message, null)
+                    }
+                }
+
+                // --- 1. CENTER HIT TEST ---
                 try {
-                    Log.d(TAG, "Processing Pending Hit Test")
-                    val hitResults = frame.hitTest(request.x, request.y)
-                    val hitResult = hitResults.firstOrNull { 
-                        val trackable = it.trackable 
-                        (trackable is Plane && trackable.trackingState == TrackingState.TRACKING) || 
-                        (trackable is com.google.ar.core.Point && trackable.trackingState == TrackingState.TRACKING)
-                    }
-
-                    if (hitResult != null) {
-                        val anchor = hitResult.createAnchor()
-                        val anchorNode = AnchorNode(sceneView.engine, anchor)
-                        sceneView.addChildNode(anchorNode)
-                        
-                        mainScope.launch {
-                            buildModelNode(request.nodeData)?.let { node ->
-                                anchorNode.addChildNode(node)
-                                request.result.success(true)
-                            } ?: request.result.success(false)
-                        }
-                    } else {
-                        request.result.error("HIT_TEST_FAILED", "No plane or point hit at position", null)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Hit Test Error", e)
-                    request.result.error("HIT_TEST_ERROR", e.message, null)
-                }
-            }
-
-            // --- THROTTLE ---
-            frameCounter++
-            if (frameCounter % 10 != 0) return@sessionUpdated
-
-            // --- 1. CENTER HIT TEST ---
-            try {
-                if (sceneView.width > 0 && sceneView.height > 0) {
-                    val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
-                    for(hit in hits) {
-                        val trackable = hit.trackable
-                        if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
-                             val hitData = serializeHitResult(hit)
-                             val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
-                             val payload = mapOf(
-                                 "hit" to hitData,
-                                 "cameraPose" to cameraPose
-                             )
-                             mainScope.launch { 
-                                 if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
-                             }
-                             break 
-                        }
-                    }
-                }
-            } catch(e: Exception) { 
-                Log.e(TAG, "Center Hit Test Exception", e)
-            }
-
-            // --- 2. PLANE UPDATES ---
-            val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
-            for (plane in updatedPlanes) {
-                when (plane.trackingState) {
-                    TrackingState.TRACKING -> {
-                        val planeMap = serializePlane(plane)
-                        if (!detectedPlanes.contains(plane)) {
-                            detectedPlanes.add(plane)
-                            rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
-                                rootLayout.removeView(it)
-                            }
-                            mainScope.launch {
-                                if(!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap)
-                            }
-                        } else {
-                            mainScope.launch {
-                                if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                    if (sceneView.width > 0 && sceneView.height > 0) {
+                        val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
+                        for(hit in hits) {
+                            val trackable = hit.trackable
+                            if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
+                                 val hitData = serializeHitResult(hit)
+                                 val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
+                                 val payload = mapOf(
+                                     "hit" to hitData,
+                                     "cameraPose" to cameraPose
+                                 )
+                                 mainScope.launch { 
+                                     if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
+                                 }
+                                 break 
                             }
                         }
                     }
-                    TrackingState.STOPPED -> {
-                        if (detectedPlanes.contains(plane)) {
-                            detectedPlanes.remove(plane)
+                } catch(e: Exception) { }
+
+                // --- 2. PLANE UPDATES ---
+                val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
+                for (plane in updatedPlanes) {
+                    when (plane.trackingState) {
+                        TrackingState.TRACKING -> {
                             val planeMap = serializePlane(plane)
-                            mainScope.launch {
-                                if(!isDestroyed) sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                            if (!detectedPlanes.contains(plane)) {
+                                detectedPlanes.add(plane)
+                                rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
+                                    rootLayout.removeView(it)
+                                }
+                                mainScope.launch {
+                                    if(!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                                }
+                            } else {
+                                mainScope.launch {
+                                    if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
+                                }
+                            }
+                        }
+                        TrackingState.STOPPED -> {
+                            if (detectedPlanes.contains(plane)) {
+                                detectedPlanes.remove(plane)
+                                val planeMap = serializePlane(plane)
+                                mainScope.launch {
+                                    if(!isDestroyed) sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
+                                }
+                            }
+                        }
+                        else -> { }
+                    }
+                }
+
+                // --- 3. POINT CLOUD ---
+                val pointCloud = frame.acquirePointCloud()
+                try {
+                    if (pointCloud.timestamp != lastPointCloudTimestamp) {
+                        lastPointCloudTimestamp = pointCloud.timestamp
+
+                        val ids: IntBuffer = pointCloud.ids
+                        val points: FloatBuffer = pointCloud.points
+                        val pointCount = ids.limit()
+
+                        val currentIdSet = HashSet<Int>()
+                        for(i in 0 until pointCount) currentIdSet.add(ids[i])
+
+                        val iterator = pointCloudNodes.iterator()
+                        while (iterator.hasNext()) {
+                            val node = iterator.next()
+                            if (!currentIdSet.contains(node.id)) {
+                                sceneView.removeChildNode(node)
+                                pointCloudNodePool.add(node)
+                                iterator.remove()
+                            }
+                        }
+
+                        for (i in 0 until pointCount) {
+                            if (pointCloudNodes.size >= maxPoints) break
+                            
+                            val id = ids[i]
+                            val pIdx = i * 4
+                            val x = points[pIdx]
+                            val y = points[pIdx + 1]
+                            val z = points[pIdx + 2]
+                            val confidence = points[pIdx + 3]
+
+                            if (confidence < minConfidence) continue
+
+                            val existing = pointCloudNodes.firstOrNull { it.id == id }
+                            if (existing != null) {
+                                existing.position = Position(x, y, z)
+                                existing.confidence = confidence
+                                existing.isVisible = showPointCloud 
+                            } else {
+                                var node: PointCloudNode? = null
+                                if (pointCloudNodePool.isNotEmpty()) {
+                                    node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
+                                }
+                                
+                                if (node == null) {
+                                    val modelInst = getPointCloudModelInstance() ?: break
+                                    node = PointCloudNode(modelInst, id, confidence)
+                                } else {
+                                    node.id = id
+                                    node.confidence = confidence
+                                }
+                                
+                                node.isVisible = showPointCloud 
+                                node.position = Position(x, y, z)
+                                pointCloudNodes.add(node)
+                                sceneView.addChildNode(node)
                             }
                         }
                     }
-                    else -> { }
-                }
-            }
-
-            // --- 3. POINT CLOUD ---
-            val pointCloud = frame.acquirePointCloud()
-            try {
-                if (pointCloud.timestamp == lastPointCloudTimestamp) {
-                    return@sessionUpdated
-                }
-                lastPointCloudTimestamp = pointCloud.timestamp
-
-                val ids: IntBuffer = pointCloud.ids
-                val points: FloatBuffer = pointCloud.points
-                val pointCount = ids.limit()
-
-                val currentIdSet = HashSet<Int>()
-                for(i in 0 until pointCount) currentIdSet.add(ids[i])
-
-                val iterator = pointCloudNodes.iterator()
-                while (iterator.hasNext()) {
-                    val node = iterator.next()
-                    if (!currentIdSet.contains(node.id)) {
-                        sceneView.removeChildNode(node)
-                        pointCloudNodePool.add(node)
-                        iterator.remove()
-                    }
-                }
-
-                for (i in 0 until pointCount) {
-                    if (pointCloudNodes.size >= maxPoints) break
-                    
-                    val id = ids[i]
-                    val pIdx = i * 4
-                    val x = points[pIdx]
-                    val y = points[pIdx + 1]
-                    val z = points[pIdx + 2]
-                    val confidence = points[pIdx + 3]
-
-                    if (confidence < minConfidence) continue
-
-                    val existing = pointCloudNodes.firstOrNull { it.id == id }
-                    if (existing != null) {
-                        existing.position = Position(x, y, z)
-                        existing.confidence = confidence
-                        existing.isVisible = showPointCloud 
-                    } else {
-                        var node: PointCloudNode? = null
-                        if (pointCloudNodePool.isNotEmpty()) {
-                            node = pointCloudNodePool.removeAt(pointCloudNodePool.size - 1)
-                        }
-                        
-                        if (node == null) {
-                            val modelInst = getPointCloudModelInstance() ?: break
-                            node = PointCloudNode(modelInst, id, confidence)
-                        } else {
-                            node.id = id
-                            node.confidence = confidence
-                        }
-                        
-                        node.isVisible = showPointCloud 
-                        node.position = Position(x, y, z)
-                        pointCloudNodes.add(node)
-                        sceneView.addChildNode(node)
-                    }
+                } finally {
+                    pointCloud.release() 
                 }
             } finally {
-                pointCloud.release() 
+                // Always reset flag to allow next frame
+                isProcessingFrame = false
             }
         }
 
@@ -465,7 +451,6 @@ class ArView(
 
         sceneView.onTrackingFailureChanged = { reason ->
             if (!isDestroyed) {
-                Log.w(TAG, "Tracking Failed: ${reason?.name}")
                 mainScope.launch {
                     sessionChannel.invokeMethod("onTrackingFailure", reason?.name)
                 }
@@ -543,7 +528,6 @@ class ArView(
     }
 
     private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
-        Log.d(TAG, "handleInit called")
         try {
             val argShowAnimatedGuide = call.argument<Boolean>("showAnimatedGuide") ?: true
             val argShowFeaturePoints = call.argument<Boolean>("showFeaturePoints") ?: false
@@ -940,6 +924,7 @@ class ArView(
                 return
             }
             
+            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1287,35 +1272,39 @@ class ArView(
     override fun getView(): View = rootLayout
 
     override fun dispose() {
-        Log.i(TAG, "dispose() called. isDestroyed=$isDestroyed")
         if (isDestroyed) return
         isDestroyed = true
+        Log.i(TAG, "dispose() called.")
         
-        lifecycle.removeObserver(debugObserver)
-        
-        // --- 1. Prevent new work ---
-        sceneView.onSessionUpdated = null
-        
-        // --- 2. Remove View to stop rendering ---
         try {
+            // STOP EVERYTHING
+            sceneView.onSessionUpdated = null
+            
+            // Pause the session manually
+            sceneView.pause()
+            
+            // Remove view to stop rendering
             rootLayout.removeAllViews()
-            Log.d(TAG, "rootLayout views removed")
+            
+            // Manually destroy the SceneView since we didn't give it a lifecycle
+            // This ensures it is destroyed exactly once, when WE say so.
+            sceneView.destroy()
+            
+            Log.i(TAG, "ARSceneView destroyed manually")
         } catch(e: Exception) {
-            Log.e(TAG, "Error removing views", e)
+            Log.e(TAG, "Error disposing SceneView", e)
         }
-        
-        // --- 3. Clean up method channels ---
+
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        // --- 4. Clean up collections ---
         pendingHitTests.clear()
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
         nodesMap.clear()
         anchorNodesMap.clear()
-
+        
         Log.i(TAG, "dispose() finished")
     }
 }
