@@ -13,7 +13,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleObserver
 import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -93,6 +92,7 @@ class ArView(
     )
     private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
+    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
@@ -182,9 +182,10 @@ class ArView(
     }
 
     init {
+        // We pass lifecycle again to let ARSceneView handle initialization.
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle,
+            sharedLifecycle = lifecycle, 
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -248,7 +249,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
             
-            // STRICT THROTTLING
+            // STRICT THROTTLING to prevent ImageReader buffer overflow
             if (isProcessingFrame) return@sessionUpdated
             isProcessingFrame = true
             
@@ -406,6 +407,7 @@ class ArView(
                     pointCloud.release() 
                 }
             } finally {
+                // IMPORTANT: Release guard so next frame can be processed
                 isProcessingFrame = false
             }
         }
@@ -584,6 +586,7 @@ class ArView(
             
             result.success(null)
         } catch (e: Exception) {
+            Log.e(TAG, "Init Exception", e)
             result.error("AR_VIEW_ERROR", e.message, null)
         }
     }
@@ -911,6 +914,7 @@ class ArView(
                 return
             }
             
+            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1263,19 +1267,30 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
-            // Remove from lifecycle to stop internal handling
-            try {
-               lifecycle.removeObserver(sceneView as LifecycleObserver)
-            } catch(e: Exception) {
-               Log.w(TAG, "Could not remove lifecycle observer: ${e.message}")
-            }
-            
+            // STOP receiving updates
             sceneView.onSessionUpdated = null
             
             // Remove view from layout to stop rendering
             rootLayout.removeAllViews()
             
-            // NO manual destroy. Rely on view detachment/lifecycle removal.
+            // Check if activity is still running before manual cleanup to avoid Double Free
+            if (!activity.isFinishing) {
+                // Manually pause the session if we can access it
+                try {
+                    sceneView.session?.pause()
+                } catch(e: Exception) {
+                    Log.e(TAG, "Error pausing AR session", e)
+                }
+                
+                // Attempt manual destroy only if the activity is alive
+                try {
+                     sceneView.destroy()
+                } catch(e: Exception) {
+                     Log.e(TAG, "Error destroying SceneView", e)
+                }
+            }
+            // If activity.isFinishing, we do NOT call destroy() because the LifecycleObserver 
+            // attached to the view will do it for us, preventing the native crash.
             
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
