@@ -13,6 +13,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -53,17 +56,19 @@ import java.util.concurrent.ConcurrentLinkedQueue
 class ArView(
     context: Context,
     private val activity: Activity,
-    private val lifecycle: Lifecycle,
+    private val activityLifecycle: Lifecycle,
     messenger: BinaryMessenger,
     id: Int,
-) : PlatformView {
+) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
     private val TAG: String = "ArView"
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
-    private var worldOriginNode: Node? = null
-
+    
+    // Custom Lifecycle Registry to control ARSceneView's lifecycle manually
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    
     private val rootLayout: ViewGroup = FrameLayout(context)
 
     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
@@ -83,6 +88,7 @@ class ArView(
     private var isProcessingFrame = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
+    private var worldOriginNode: Node? = null
     
     private data class PendingHitTest(
         val x: Float, 
@@ -92,7 +98,6 @@ class ArView(
     )
     private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
-    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
@@ -103,6 +108,17 @@ class ArView(
     private var maxPoints = 500
     private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
+
+    // Implement LifecycleOwner
+    override fun getLifecycle(): Lifecycle {
+        return lifecycleRegistry
+    }
+
+    // Bridge Activity Lifecycle events to our custom registry
+    override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+        if (isDestroyed) return
+        lifecycleRegistry.handleLifecycleEvent(event)
+    }
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) {
@@ -182,10 +198,16 @@ class ArView(
     }
 
     init {
-        // We pass lifecycle again to let ARSceneView handle initialization.
+        // Sync our custom lifecycle with the activity's current state
+        lifecycleRegistry.currentState = activityLifecycle.currentState
+        // Listen for future activity lifecycle updates
+        activityLifecycle.addObserver(this)
+
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle, 
+            // Pass OUR custom lifecycle, not the activity's directly.
+            // This gives us full control to DESTROY it when Flutter calls dispose().
+            sharedLifecycle = this, 
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -407,7 +429,6 @@ class ArView(
                     pointCloud.release() 
                 }
             } finally {
-                // IMPORTANT: Release guard so next frame can be processed
                 isProcessingFrame = false
             }
         }
@@ -594,7 +615,8 @@ class ArView(
     private fun handleDisableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = true
-            sceneView.session?.pause()
+            // We control lifecycle, so we update the state
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED 
             result.success(null)
         } catch (e: Exception) {
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
@@ -604,7 +626,8 @@ class ArView(
     private fun handleEnableCamera(result: MethodChannel.Result) {
         try {
             isSessionPaused = false
-            sceneView.session?.resume()
+            // We control lifecycle, so we update the state
+            lifecycleRegistry.currentState = Lifecycle.State.RESUMED
             result.success(null)
         } catch (e: Exception) {
             result.error("ENABLE_CAMERA_ERROR", e.message, null)
@@ -1270,27 +1293,17 @@ class ArView(
             // STOP receiving updates
             sceneView.onSessionUpdated = null
             
-            // Remove view from layout to stop rendering
+            // Remove listener so we don't receive future activity events
+            activityLifecycle.removeObserver(this)
+            
+            // MANUALLY TRIGGER DESTROY on our custom lifecycle
+            // This is the key fix. We tell the SceneView "you are destroyed"
+            // through the Lifecycle it is observing.
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            
             rootLayout.removeAllViews()
             
-            // Check if activity is still running before manual cleanup to avoid Double Free
-            if (!activity.isFinishing) {
-                // Manually pause the session if we can access it
-                try {
-                    sceneView.session?.pause()
-                } catch(e: Exception) {
-                    Log.e(TAG, "Error pausing AR session", e)
-                }
-                
-                // Attempt manual destroy only if the activity is alive
-                try {
-                     sceneView.destroy()
-                } catch(e: Exception) {
-                     Log.e(TAG, "Error destroying SceneView", e)
-                }
-            }
-            // If activity.isFinishing, we do NOT call destroy() because the LifecycleObserver 
-            // attached to the view will do it for us, preventing the native crash.
+            Log.i(TAG, "Lifecycle set to DESTROYED manually")
             
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
