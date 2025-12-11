@@ -13,6 +13,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleObserver
+import androidx.lifecycle.OnLifecycleEvent
 import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
@@ -50,6 +52,22 @@ import java.nio.IntBuffer
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
 
+// Custom LifecycleObserver for debugging
+class ArViewLifecycleObserver(private val tag: String) : LifecycleObserver {
+    @OnLifecycleEvent(Lifecycle.Event.ON_CREATE)
+    fun onCreate() { Log.d(tag, "Lifecycle: ON_CREATE") }
+    @OnLifecycleEvent(Lifecycle.Event.ON_START)
+    fun onStart() { Log.d(tag, "Lifecycle: ON_START") }
+    @OnLifecycleEvent(Lifecycle.Event.ON_RESUME)
+    fun onResume() { Log.d(tag, "Lifecycle: ON_RESUME") }
+    @OnLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+    fun onPause() { Log.d(tag, "Lifecycle: ON_PAUSE") }
+    @OnLifecycleEvent(Lifecycle.Event.ON_STOP)
+    fun onStop() { Log.d(tag, "Lifecycle: ON_STOP") }
+    @OnLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+    fun onDestroy() { Log.d(tag, "Lifecycle: ON_DESTROY") }
+}
+
 class ArView(
     context: Context,
     private val activity: Activity,
@@ -58,7 +76,7 @@ class ArView(
     id: Int,
 ) : PlatformView {
 
-    private val TAG: String = ArView::class.java.name
+    private val TAG: String = "ArViewDebug"
     private val viewContext: Context = context
     private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main)
@@ -81,7 +99,6 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // Queue for hit test requests to be processed in the update loop
     private data class PendingHitTest(
         val x: Float, 
         val y: Float, 
@@ -90,21 +107,22 @@ class ArView(
     )
     private val pendingHitTests = ConcurrentLinkedQueue<PendingHitTest>()
 
-    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
-    
     private var minConfidence = 0.1f
     private var maxPoints = 500
     private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
 
+    private val debugObserver = ArViewLifecycleObserver(TAG)
+
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) {
+            Log.w(TAG, "MethodCallHandler ignored: View is destroyed")
             result.error("DESTROYED", "View is destroyed", null)
             return@MethodCallHandler
         }
@@ -181,10 +199,14 @@ class ArView(
     }
 
     init {
+        Log.d(TAG, "Initializing ArView. Current Lifecycle State: ${lifecycle.currentState}")
+        lifecycle.addObserver(debugObserver)
+
         sceneView = ARSceneView(
             context = viewContext,
             sharedLifecycle = lifecycle,
             sessionConfiguration = { session, config ->
+                Log.d(TAG, "AR Session Configured")
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     depthMode = Config.DepthMode.DISABLED 
@@ -196,6 +218,7 @@ class ArView(
         )
 
         rootLayout.addView(sceneView)
+        Log.d(TAG, "ARSceneView added to root layout")
 
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
@@ -233,17 +256,20 @@ class ArView(
             } else if (call.hasArgument("hide")) {
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
+            Log.d(TAG, "Show Point Cloud: $showPointCloud")
 
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
             result.success(null)
         } catch (e: Exception) {
+            Log.e(TAG, "Error showing point cloud", e)
             result.error("POINT_CLOUD_ERROR", e.message, null)
         }
     }
 
     private fun setupSceneViewListeners() {
+        Log.d(TAG, "Setting up SceneView Listeners")
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
 
@@ -254,6 +280,7 @@ class ArView(
                 val request = pendingHitTests.poll() ?: break
                 if (isDestroyed) break
                 try {
+                    Log.d(TAG, "Processing Pending Hit Test")
                     val hitResults = frame.hitTest(request.x, request.y)
                     val hitResult = hitResults.firstOrNull { 
                         val trackable = it.trackable 
@@ -276,6 +303,7 @@ class ArView(
                         request.result.error("HIT_TEST_FAILED", "No plane or point hit at position", null)
                     }
                 } catch (e: Exception) {
+                    Log.e(TAG, "Hit Test Error", e)
                     request.result.error("HIT_TEST_ERROR", e.message, null)
                 }
             }
@@ -304,7 +332,9 @@ class ArView(
                         }
                     }
                 }
-            } catch(e: Exception) { }
+            } catch(e: Exception) { 
+                Log.e(TAG, "Center Hit Test Exception", e)
+            }
 
             // --- 2. PLANE UPDATES ---
             val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
@@ -435,6 +465,7 @@ class ArView(
 
         sceneView.onTrackingFailureChanged = { reason ->
             if (!isDestroyed) {
+                Log.w(TAG, "Tracking Failed: ${reason?.name}")
                 mainScope.launch {
                     sessionChannel.invokeMethod("onTrackingFailure", reason?.name)
                 }
@@ -512,6 +543,7 @@ class ArView(
     }
 
     private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
+        Log.d(TAG, "handleInit called")
         try {
             val argShowAnimatedGuide = call.argument<Boolean>("showAnimatedGuide") ?: true
             val argShowFeaturePoints = call.argument<Boolean>("showFeaturePoints") ?: false
@@ -580,6 +612,7 @@ class ArView(
             
             result.success(null)
         } catch (e: Exception) {
+            Log.e(TAG, "Init Exception", e)
             result.error("AR_VIEW_ERROR", e.message, null)
         }
     }
@@ -907,7 +940,6 @@ class ArView(
                 return
             }
             
-            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1255,35 +1287,35 @@ class ArView(
     override fun getView(): View = rootLayout
 
     override fun dispose() {
+        Log.i(TAG, "dispose() called. isDestroyed=$isDestroyed")
         if (isDestroyed) return
         isDestroyed = true
-        Log.i(TAG, "dispose")
         
+        lifecycle.removeObserver(debugObserver)
+        
+        // --- 1. Prevent new work ---
+        sceneView.onSessionUpdated = null
+        
+        // --- 2. Remove View to stop rendering ---
         try {
-            // Stop session updates immediately to prevent access to released resources
-            sceneView.onSessionUpdated = null
-            
-            // Remove view from layout to stop rendering
             rootLayout.removeAllViews()
-            
-            // IMPORTANT:
-            // We DO NOT call sceneView.destroy() here manually.
-            // ARSceneView is lifecycle-aware and will destroy itself when the Activity/Fragment is destroyed.
-            // Calling it manually causes the "Double Free" native crash.
+            Log.d(TAG, "rootLayout views removed")
         } catch(e: Exception) {
-            Log.e(TAG, "Error disposing SceneView", e)
+            Log.e(TAG, "Error removing views", e)
         }
-
-        // Clear channels
+        
+        // --- 3. Clean up method channels ---
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        // Clear data
+        // --- 4. Clean up collections ---
         pendingHitTests.clear()
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
         nodesMap.clear()
         anchorNodesMap.clear()
+
+        Log.i(TAG, "dispose() finished")
     }
 }
