@@ -78,7 +78,9 @@ class ArView(
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // Cache the latest ARCore frame here to avoid calling session.update() manually
+    // FIX: Cache the latest ARCore frame here. 
+    // This avoids calling session.update() manually (which steals buffers) 
+    // and avoids the 'Unresolved reference: arFrame' error.
     private var currentFrame: Frame? = null
 
     // Point Cloud
@@ -870,6 +872,7 @@ class ArView(
                 val node = buildModelNode(nodeData) ?: return@launch
                 
                 // FIX: Use current cached frame instead of manually calling session.update()
+                // This prevents the "Buffer Lost" and "Unable to acquire buffer item" crashes.
                 val frame = currentFrame
                 
                 if (frame == null) {
@@ -1246,9 +1249,16 @@ class ArView(
         
         try {
             sceneView.onSessionUpdated = null
-            // Explicitly destroy the SceneView to release GL resources and AR Session 
-            // BEFORE the surface is destroyed by removeAllViews()
-            sceneView.destroy()
+            currentFrame = null
+            
+            // CRITICAL FIX: Only manually destroy sceneView if the activity is NOT destroying.
+            // If the activity is destroyed (lifecycle.currentState == DESTROYED), 
+            // ARSceneView's lifecycle observer has already handled the destruction.
+            // Explicitly calling destroy() again causes the 'Double Free' native crash.
+            // We use isAtLeast(CREATED) because DESTROYED is lower than CREATED.
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                sceneView.destroy()
+            }
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
         }
