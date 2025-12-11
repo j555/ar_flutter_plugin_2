@@ -40,7 +40,6 @@ import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
-import io.github.sceneview.node.PointCloudNode
 import io.github.sceneview.node.Node
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
