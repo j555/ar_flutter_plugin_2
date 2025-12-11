@@ -1198,16 +1198,38 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
+        // 1. Stop Updates
         sceneView.onSessionUpdated = null 
+        
+        // 2. Clear Method Channels
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        pointCloudNodePool.clear()
+        // 3. Clear Lists
+        pointCloudNodes.forEach { sceneView.removeChildNode(it) }
         pointCloudNodes.clear()
+        pointCloudNodePool.clear()
+        
+        // 4. Destroy Models (Native Cleanup)
+        pointCloudModelInstances.forEach { it.destroy() }
+        pointCloudModelInstances.clear()
+        
+        nodesMap.values.forEach { it.destroy() }
         nodesMap.clear()
+        
+        anchorNodesMap.values.forEach { 
+            it.anchor?.detach()
+            it.destroy() 
+        }
         anchorNodesMap.clear()
 
+        // 5. Remove View
         rootLayout.removeAllViews()
+        
+        // 6. Pause Session immediately
+        try {
+            sceneView.session?.pause()
+        } catch(e: Exception) {}
     }
 }
