@@ -76,14 +76,12 @@ class ArView(
     private var handleRotation = false
     private var isSessionPaused = false
     
-    // FLAG: Tracks if the view has been disposed to prevent access to native objects
     @Volatile
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
     
-    // Queue for pending hit tests. This allows us to process hit tests during the 
-    // standard frame update loop without manually forcing updates or holding frames.
+    // Queue for hit test requests to be processed in the update loop
     private data class PendingHitTest(
         val x: Float, 
         val y: Float, 
@@ -252,8 +250,6 @@ class ArView(
             latestLightEstimate = frame.lightEstimate
             
             // --- 0. PROCESS PENDING HIT TESTS ---
-            // Process queued hit tests here, using the current valid frame.
-            // This prevents buffer starvation because we never hold the frame.
             while (!pendingHitTests.isEmpty()) {
                 val request = pendingHitTests.poll() ?: break
                 if (isDestroyed) break
@@ -912,7 +908,6 @@ class ArView(
             }
             
             // Queue the request to be processed in the next session update (Main Thread)
-            // This avoids holding onto 'Frame' objects or calling 'session.update()' manually.
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
