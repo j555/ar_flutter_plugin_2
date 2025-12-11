@@ -77,19 +77,20 @@ class ArView(
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
-    // REMOVED: currentFrame (Fixes Memory Leak)
 
     // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
+    // VISIBILITY STATE
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
     
     private var minConfidence = 0.1f
     private var maxPoints = 500
+    private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
@@ -116,17 +117,17 @@ class ArView(
         val pose = plane.centerPose
         val matrix = FloatArray(16)
         pose.toMatrix(matrix, 0)
-        
         return mapOf(
-            "type" to 0, // Plane
-            "identifier" to plane.hashCode().toString(), 
+            "type" to 0,
+            "identifier" to plane.hashCode().toString(),
             "centerPose" to matrix.map { it.toDouble() },
             "extent" to listOf(plane.extentX.toDouble(), plane.extentZ.toDouble())
         )
     }
 
+    // Legacy handler - returns null to prevent using stale frames
+    // Real-time hits are now pushed via onCenterHitResult
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
-        // Return null immediately. Logic moved to push-based onCenterHitResult
         result.success(null)
     }
     
@@ -188,7 +189,6 @@ class ArView(
             result.error("VIEW_DESTROYED", "View disposed", null)
             return
         }
-        
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
             val colorCorrectionFloats = FloatArray(4)
@@ -215,11 +215,8 @@ class ArView(
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
             } else if (call.hasArgument("hide")) {
-                // Support legacy "hide" argument
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
-
-            // Apply immediately to existing nodes
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
@@ -234,6 +231,10 @@ class ArView(
             if (!isSessionPaused && !isDestroyed) {
                 latestLightEstimate = frame.lightEstimate
                 
+                // THROTTLING: Skip frame processing to reduce load (Every 3rd frame)
+                frameCounter++
+                if (frameCounter % 3 != 0) return@sessionUpdated
+
                 // --- 1. CENTER HIT TEST (PUSH TO FLUTTER) ---
                 try {
                     val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
@@ -272,8 +273,6 @@ class ArView(
                                     sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                                 }
                             } else {
-                                // Reduced updates: Only update if significant change?
-                                // For now, we update every frame as throttling was removed
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
                                 }
@@ -333,7 +332,6 @@ class ArView(
                         if (existing != null) {
                             existing.position = Position(x, y, z)
                             existing.confidence = confidence
-                            // FIX: Ensure visibility matches state
                             existing.isVisible = showPointCloud 
                         } else {
                             var node: PointCloudNode? = null
@@ -349,7 +347,6 @@ class ArView(
                                 node.confidence = confidence
                             }
                             
-                            // FIX: Ensure visibility matches state for new/recycled nodes
                             node.isVisible = showPointCloud 
                             
                             node.position = Position(x, y, z)
@@ -358,8 +355,7 @@ class ArView(
                         }
                     }
                 } finally {
-                    // CRITICAL: Always release point cloud
-                    pointCloud.release()
+                    pointCloud.release() // CRITICAL: Always release
                 }
             }
         }
@@ -419,13 +415,12 @@ class ArView(
         try {
             val projectionMatrix = sceneView.cameraNode.projectionTransform?.toMatrix()?.data
             if (projectionMatrix != null) {
-                val matrixData = projectionMatrix.map { it.toDouble() }
-                result.success(matrixData)
+                result.success(projectionMatrix.map { it.toDouble() })
             } else {
                 result.error("CAMERA_NOT_READY", "Camera projection matrix is not available yet.", null)
             }
         } catch (e: Exception) {
-            result.error("NATIVE_ERROR", "Failed to get projection matrix: ${e.message}", e.toString())
+            result.error("NATIVE_ERROR", e.message, e.toString())
         }
     }
 
@@ -437,8 +432,7 @@ class ArView(
         try {
             val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data
             if (cameraPose != null) {
-                val matrixData = cameraPose.map { it.toDouble() }
-                result.success(matrixData)
+                result.success(cameraPose.map { it.toDouble() })
             } else {
                 result.error("NO_CAMERA_POSE", "Camera pose is not available", null)
             }
@@ -535,11 +529,10 @@ class ArView(
                 }
             }
             
-            // FIX: Set initial point cloud visibility from init args if provided
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
             } else {
-                showPointCloud = false // Default off for cleaner look
+                showPointCloud = false
             }
             
             result.success(null)
@@ -696,7 +689,6 @@ class ArView(
             nodesMap[nodeName]?.let { node ->
                 node.parent?.removeChildNode(node)
                 sceneView.removeChildNode(node)
-                // node.destroy() // REMOVED (Fixes compilation error)
                 nodesMap.remove(nodeName)
                 result.success(nodeName)
             } ?: run {
@@ -1096,76 +1088,177 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
-        if (isDestroyed || sceneView.width <= 0) { result.error("ERR", "View invalid", null); return }
+        if (isDestroyed || sceneView.width <= 0) {
+             result.error("SNAPSHOT_ERROR", "View invalid", null)
+             return
+        }
         mainScope.launch(Dispatchers.Main) { 
-             val b = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-             PixelCopy.request(sceneView, b, { res ->
-                 if(res == PixelCopy.SUCCESS) {
-                     mainScope.launch(Dispatchers.IO) {
-                         val s = java.io.ByteArrayOutputStream()
-                         b.compress(Bitmap.CompressFormat.PNG, 100, s)
-                         val bytes = s.toByteArray()
-                         withContext(Dispatchers.Main){ result.success(bytes) }
-                     }
-                 } else result.error("ERR", "PixelCopy failed", null)
-             }, Handler(Looper.getMainLooper()))
+            val bitmap =
+                Bitmap.createBitmap(
+                    sceneView.width,
+                    sceneView.height,
+                    Bitmap.Config.ARGB_8888,
+                )
+
+            try {
+                val listener =
+                    PixelCopy.OnPixelCopyFinishedListener { copyResult ->
+                        if (isDestroyed) { 
+                            Log.e(TAG, "Snapshot finished AFTER dispose, aborting result.")
+                            return@OnPixelCopyFinishedListener
+                        }
+                        if (copyResult == PixelCopy.SUCCESS) {
+                            mainScope.launch(Dispatchers.IO) {
+                                val byteStream = java.io.ByteArrayOutputStream()
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+                                val byteArray = byteStream.toByteArray()
+                                withContext(Dispatchers.Main) {
+                                    result.success(byteArray)
+                                }
+                            }
+                        } else {
+                            result.error("SNAPSHOT_ERROR", "Failed to capture snapshot (PixelCopy failed with code $copyResult)", null)
+                        }
+                    }
+
+                PixelCopy.request(
+                    sceneView,
+                    bitmap,
+                    listener,
+                    Handler(Looper.getMainLooper()),
+                )
+            } catch (e: Exception) {
+                result.error("SNAPSHOT_ERROR", e.message, null)
+            }
         }
     }
-    
-    private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
+
+    private fun handleShowPlanes(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
         try {
-             val argShowPlanes = call.argument<Boolean>("showPlanes") ?: true
-             val argShowAnimatedGuide = call.argument<Boolean>("showAnimatedGuide") ?: true
-             
-             sceneView.configureSession { session, config ->
-                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                 config.lightEstimationMode = Config.LightEstimationMode.AMBIENT_INTENSITY
-                 config.focusMode = Config.FocusMode.AUTO
-                 config.depthMode = Config.DepthMode.DISABLED
-             }
-             sceneView.planeRenderer.isEnabled = argShowPlanes
-             sceneView.planeRenderer.isVisible = argShowPlanes
-             
-             if (call.hasArgument("showPointCloud")) showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
-             result.success(null)
-        } catch(e:Exception){ result.error("ERR", e.message, null) }
-    }
-    
-    private fun handleShowPlanes(call: MethodCall, result: MethodChannel.Result) {
-        val show = call.argument<Boolean>("showPlanes") ?: false
-        sceneView.planeRenderer.isEnabled = show
-        result.success(null)
+            val showPlanes = call.argument<Boolean>("showPlanes") ?: false
+            sceneView.apply {
+                planeRenderer.isEnabled = showPlanes
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("SHOW_PLANES_ERROR", e.message, null)
+        }
     }
 
     private fun notifyPlaneOrPointTap(hitResults: List<Map<String, Any?>>) {
-        mainScope.launch { try { sessionChannel.invokeMethod("onPlaneOrPointTap", hitResults) } catch(e:Exception){} }
+        mainScope.launch {
+            try {
+                sessionChannel.invokeMethod("onPlaneOrPointTap", hitResults)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
-    
-    private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) { result.success(null) }
+
+    private fun makeWorldOriginNode(context: Context): Node {
+        val axisSize = 0.1f
+        val axisRadius = 0.005f
+        
+        val engine = sceneView.engine
+        val materialLoader = MaterialLoader(engine = engine, context = context)
+        
+        val rootNode = Node(engine = engine)
+        
+        val xNode = CylinderNode(
+            engine = engine,
+            radius = axisRadius,
+            height = axisSize,
+            materialInstance = materialLoader.createColorInstance(
+                color = io.github.sceneview.math.Color(1f, 0f, 0f, 1f),
+                metallic = 0.0f,
+                roughness = 0.4f
+            )
+        )
+        
+        val yNode = CylinderNode(
+            engine = engine,
+            radius = axisRadius,
+            height = axisSize,
+            materialInstance = materialLoader.createColorInstance(
+                color = io.github.sceneview.math.Color(0f, 1f, 0f, 1f),
+                metallic = 0.0f,
+                roughness = 0.4f
+            )
+        )
+        
+        val zNode = CylinderNode(
+            engine = engine,
+            radius = axisRadius,
+            height = axisSize,
+            materialInstance = materialLoader.createColorInstance(
+                color = io.github.sceneview.math.Color(0f, 0f, 1f, 1f),
+                metallic = 0.0f,
+                roughness = 0.4f
+            )
+        )
+
+        rootNode.addChildNode(xNode)
+        rootNode.addChildNode(yNode)
+        rootNode.addChildNode(zNode)
+
+        xNode.position = Position(axisSize / 2, 0f, 0f)
+        xNode.rotation = Rotation(0f, 0f, 90f)
+
+        yNode.position = Position(0f, axisSize / 2, 0f)
+
+        zNode.position = Position(0f, 0f, axisSize / 2)
+        zNode.rotation = Rotation(90f, 0f, 0f)
+
+        return rootNode
+    }
+
+    private fun handleShowWorldOrigin(show: Boolean) {
+        if (show) {
+            if (worldOriginNode == null) {
+                worldOriginNode = makeWorldOriginNode(viewContext)
+                worldOriginNode?.let { node ->
+                    sceneView.addChildNode(node)
+                }
+            }
+        } else {
+            worldOriginNode?.let { node ->
+                sceneView.removeChildNode(node)
+            }
+            worldOriginNode = null
+        }
+    }
 
     override fun getView(): View = rootLayout
 
-    // SAFE DISPOSE - Crash Fix
     override fun dispose() {
         if (isDestroyed) return
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        try {
-            sceneView.onSessionUpdated = null
-            sceneView.session?.pause()
-        } catch(e: Exception) {}
-
+        // 1. Stop processing frames
+        sceneView.onSessionUpdated = null 
+        
+        // 2. Pause the session immediately (SceneView handles the rest)
+        sceneView.pause()
+        
+        // 3. Clear Listeners
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
+        // 4. Clear Native Memory Lists
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
         nodesMap.clear()
         anchorNodesMap.clear()
         
-        // Remove views but DO NOT call sceneView.destroy() manually as PlatformView handles it
+        // 5. Remove Views
         rootLayout.removeAllViews()
+        
+        // 6. Final Destroy
+        sceneView.destroy()
     }
 }
