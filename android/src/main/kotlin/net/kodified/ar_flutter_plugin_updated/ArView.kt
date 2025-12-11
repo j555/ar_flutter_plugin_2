@@ -79,7 +79,6 @@ class ArView(
     @Volatile
     private var isDestroyed = false
     
-    // GUARD: Prevents frame processing overlap to stop ImageReader buffer overflow
     @Volatile
     private var isProcessingFrame = false
 
@@ -183,10 +182,10 @@ class ArView(
     }
 
     init {
-        // RESTORED: Pass lifecycle so the view initializes properly.
+        // We pass lifecycle again to let ARSceneView handle initialization.
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle,
+            sharedLifecycle = lifecycle, 
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -250,8 +249,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
             
-            // STRICT THROTTLING: Drop frame immediately if previous one isn't finished.
-            // This prevents the ImageReader buffer warnings.
+            // STRICT THROTTLING to prevent ImageReader buffer overflow
             if (isProcessingFrame) return@sessionUpdated
             isProcessingFrame = true
             
@@ -916,6 +914,7 @@ class ArView(
                 return
             }
             
+            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1271,28 +1270,27 @@ class ArView(
             // STOP receiving updates
             sceneView.onSessionUpdated = null
             
-            // PAUSE the session manually (accessing the ARCore session directly)
+            // Remove view from layout to stop rendering
+            rootLayout.removeAllViews()
+            
+            // Check if activity is still running before manual cleanup to avoid Double Free
             if (!activity.isFinishing) {
+                // Manually pause the session if we can access it
                 try {
                     sceneView.session?.pause()
                 } catch(e: Exception) {
                     Log.e(TAG, "Error pausing AR session", e)
                 }
-            }
-            
-            // REMOVE view to stop rendering
-            rootLayout.removeAllViews()
-            
-            // DESTROY: Only manual destroy if the activity is NOT closing.
-            // If the activity is closing, Android will tear down the context anyway.
-            // Manually destroying here while the Activity is dying causes the double-free crash.
-            if (!activity.isFinishing) {
+                
+                // Attempt manual destroy only if the activity is alive
                 try {
                      sceneView.destroy()
                 } catch(e: Exception) {
                      Log.e(TAG, "Error destroying SceneView", e)
                 }
             }
+            // If activity.isFinishing, we do NOT call destroy() because the LifecycleObserver 
+            // attached to the view will do it for us, preventing the native crash.
             
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
