@@ -1,4 +1,3 @@
-// android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArView.kt
 package net.kodified.ar_flutter_plugin_updated
 
 import android.app.Activity
@@ -42,6 +41,8 @@ import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
+// Note: PointCloudNode is in the same package, so no import needed if defined in this package
+// If it was in a sub-package, import net.kodified.ar_flutter_plugin_updated.PointCloudNode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -75,24 +76,21 @@ class ArView(
     private var handlePans = false
     private var handleRotation = false
     private var isSessionPaused = false
-    
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
-
-    // Cache the latest frame from the session update listener
     private var currentFrame: Frame? = null
 
-    // --- Point Cloud Pooling ---
+    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
     
-    // VISIBILITY STATE
+    // FIX: State to persist visibility across frames. Defaults to false (hidden).
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
-    // REMOVED: lastPointCloudFrame (Fixes Memory Leak)
+    // FIX: Removed lastPointCloudFrame to prevent memory leak/buffer exhaustion.
     
     private var minConfidence = 0.1f
     private var maxPoints = 500
@@ -106,8 +104,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "showPointCloud" -> handleShowPointCloud(call, result)
-            "hidePointCloud" -> handleShowPointCloud(call, result)
+            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity
+            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compatibility
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -121,15 +119,30 @@ class ArView(
         }
     }
 
+    // FIX: Optimization Helper - Serialize Pose without creating Anchor
+    private fun serializePlane(plane: Plane): Map<String, Any> {
+        val pose = plane.centerPose
+        val matrix = FloatArray(16)
+        pose.toMatrix(matrix, 0)
+        
+        return mapOf(
+            "type" to 0, // Plane
+            "identifier" to plane.hashCode().toString(), // Use Hash as ID instead of new Anchor ID
+            "centerPose" to matrix.map { it.toDouble() },
+            "extent" to listOf(plane.extentX.toDouble(), plane.extentZ.toDouble())
+        )
+    }
+
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
         if (isDestroyed) {
             result.error("SESSION_ERROR", "AR Session destroyed", null)
             return
         }
 
+        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null)
+            result.success(null) // No frame available yet
             return
         }
 
@@ -149,6 +162,7 @@ class ArView(
 
         for (hit in hits) {
             val trackable = hit.trackable
+            // Accept Planes and Oriented Points
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
                 
@@ -239,14 +253,17 @@ class ArView(
         result.success(null) 
     }
 
+    // FIX: Properly toggle point cloud visibility and persist state
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
             } else if (call.hasArgument("hide")) {
+                // Support legacy "hide" argument
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
 
+            // Apply immediately to existing nodes
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
@@ -260,24 +277,27 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (!isSessionPaused && !isDestroyed) {
                 
+                // Cache the frame for Hit Tests
                 currentFrame = frame
+
+                // Cache lighting
                 latestLightEstimate = frame.lightEstimate
 
                 val updatedPlanes = frame.getUpdatedTrackables(Plane::class.java)
                 for (plane in updatedPlanes) {
                     when (plane.trackingState) {
                         TrackingState.TRACKING -> {
+                            // FIX: Use lightweight serializePlane instead of createAnchor
+                            val planeMap = serializePlane(plane)
                             if (!detectedPlanes.contains(plane)) {
                                 detectedPlanes.add(plane)
                                 rootLayout.findViewWithTag<View>("hand_motion_layout")?.let {
                                     rootLayout.removeView(it)
                                 }
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                                 }
                             } else {
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
                                 }
@@ -286,7 +306,7 @@ class ArView(
                         TrackingState.STOPPED -> {
                             if (detectedPlanes.contains(plane)) {
                                 detectedPlanes.remove(plane)
-                                val planeMap = serializeAnchor(plane.createAnchor(plane.centerPose))
+                                val planeMap = serializePlane(plane)
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneRemoved", planeMap)
                                 }
@@ -306,8 +326,7 @@ class ArView(
                 }
 
                 lastPointCloudTimestamp = pointCloud.timestamp
-                
-                // NO REF HELD (Fixes Leak)
+                // FIX: Do NOT assign lastPointCloudFrame (prevents buffer leak)
 
                 val ids: IntBuffer = pointCloud.ids
                 val points: FloatBuffer = pointCloud.points
@@ -342,6 +361,7 @@ class ArView(
                     if (existing != null) {
                         existing.position = Position(x, y, z)
                         existing.confidence = confidence
+                        // FIX: Ensure visibility matches state
                         existing.isVisible = showPointCloud 
                     } else {
                         var node: PointCloudNode? = null
@@ -357,6 +377,7 @@ class ArView(
                             node.confidence = confidence
                         }
                         
+                        // FIX: Ensure visibility matches state for new/recycled nodes
                         node.isVisible = showPointCloud 
                         
                         node.position = Position(x, y, z)
@@ -539,10 +560,11 @@ class ArView(
                 }
             }
             
+            // FIX: Set initial point cloud visibility from init args if provided
             if (call.hasArgument("showPointCloud")) {
                 showPointCloud = call.argument<Boolean>("showPointCloud") ?: false
             } else {
-                showPointCloud = false
+                showPointCloud = false // Default off for cleaner look
             }
             
             result.success(null)
@@ -1255,7 +1277,7 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        sceneView.onSessionUpdated = null // Stop updates
+        sceneView.onSessionUpdated = null 
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
