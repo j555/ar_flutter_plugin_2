@@ -79,7 +79,6 @@ class ArView(
     @Volatile
     private var isDestroyed = false
     
-    // GUARD: Prevents frame processing overlap to stop ImageReader buffer overflow
     @Volatile
     private var isProcessingFrame = false
 
@@ -183,9 +182,10 @@ class ArView(
     }
 
     init {
+        // We pass NULL for lifecycle to take manual control and avoid double-destroy issues
         sceneView = ARSceneView(
             context = viewContext,
-            sharedLifecycle = lifecycle, 
+            sharedLifecycle = null, 
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -199,6 +199,13 @@ class ArView(
 
         rootLayout.addView(sceneView)
         
+        // Manually resume session since we have no lifecycle observer
+        try {
+            sceneView.resume()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resuming session in init", e)
+        }
+
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
@@ -249,8 +256,7 @@ class ArView(
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
             if (isSessionPaused || isDestroyed) return@sessionUpdated
             
-            // STRICT THROTTLING: Drop frame immediately if previous one isn't finished.
-            // This prevents the ImageReader buffer warnings.
+            // STRICT THROTTLING to prevent ImageReader buffer overflow
             if (isProcessingFrame) return@sessionUpdated
             isProcessingFrame = true
             
@@ -408,7 +414,6 @@ class ArView(
                     pointCloud.release() 
                 }
             } finally {
-                // IMPORTANT: Release guard so next frame can be processed
                 isProcessingFrame = false
             }
         }
@@ -587,7 +592,6 @@ class ArView(
             
             result.success(null)
         } catch (e: Exception) {
-            Log.e(TAG, "Init Exception", e)
             result.error("AR_VIEW_ERROR", e.message, null)
         }
     }
@@ -915,7 +919,6 @@ class ArView(
                 return
             }
             
-            // Queue the request to be processed in the next session update (Main Thread)
             val x = screenPosition["x"]?.toFloat() ?: 0f
             val y = screenPosition["y"]?.toFloat() ?: 0f
             pendingHitTests.add(PendingHitTest(x, y, nodeData, result))
@@ -1268,21 +1271,22 @@ class ArView(
         Log.i(TAG, "dispose")
         
         try {
+            // STOP receiving updates
             sceneView.onSessionUpdated = null
             
-            // FIX: Use the ARCore Session object to pause directly.
-            // sceneView.pause() is not available, but the underlying session is.
-            if (!activity.isFinishing) {
-                sceneView.session?.pause()
-            }
+            // PAUSE the session manually (since we don't have lifecycle)
+            sceneView.session?.pause()
             
-            // Clean up the view, but let lifecycle do the heavy lifting if finishing.
+            // REMOVE view to stop rendering
             rootLayout.removeAllViews()
-
+            
+            // DESTROY: Only manual destroy if the activity is NOT closing.
+            // If the activity is closing, Android will tear down the context anyway.
             if (!activity.isFinishing) {
                 sceneView.destroy()
             }
             
+            Log.i(TAG, "ARSceneView destroyed manually")
         } catch(e: Exception) {
             Log.e(TAG, "Error disposing SceneView", e)
         }
@@ -1297,6 +1301,6 @@ class ArView(
         nodesMap.clear()
         anchorNodesMap.clear()
         
-        rootLayout.removeAllViews()
+        Log.i(TAG, "dispose() finished")
     }
 }
