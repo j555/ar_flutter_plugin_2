@@ -79,17 +79,12 @@ class ArView(
     private val detectedPlanes = mutableSetOf<Plane>()
     private var currentFrame: Frame? = null
 
-    // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
-    
-    // VISIBILITY STATE
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
-    // REMOVED: lastPointCloudFrame (Fixes Memory Leak)
-    
     private var minConfidence = 0.1f
     private var maxPoints = 500
     private var frameCounter = 0
@@ -100,8 +95,8 @@ class ArView(
             "init" -> handleInit(call, result)
             "showPlanes" -> handleShowPlanes(call, result)
             "showFeaturePoints" -> handleShowFeaturePoints(call, result)
-            "showPointCloud" -> handleShowPointCloud(call, result) // Renamed for clarity
-            "hidePointCloud" -> handleShowPointCloud(call, result) // Backward compatibility
+            "showPointCloud" -> handleShowPointCloud(call, result)
+            "hidePointCloud" -> handleShowPointCloud(call, result)
             "dispose" -> dispose()
             "getAnchorPose" -> handleGetAnchorPose(call, result)
             "getCameraPose" -> handleGetCameraPose(result)
@@ -115,15 +110,13 @@ class ArView(
         }
     }
 
-    // Optimization Helper - Serialize Pose without creating Anchor
     private fun serializePlane(plane: Plane): Map<String, Any> {
         val pose = plane.centerPose
         val matrix = FloatArray(16)
         pose.toMatrix(matrix, 0)
-        
         return mapOf(
-            "type" to 0, // Plane
-            "identifier" to plane.hashCode().toString(), // Use Hash as ID instead of new Anchor ID
+            "type" to 0,
+            "identifier" to plane.hashCode().toString(),
             "centerPose" to matrix.map { it.toDouble() },
             "extent" to listOf(plane.extentX.toDouble(), plane.extentZ.toDouble())
         )
@@ -134,38 +127,32 @@ class ArView(
             result.error("SESSION_ERROR", "AR Session destroyed", null)
             return
         }
-
-        // Use the cached frame from onSessionUpdated
         val frame = currentFrame
         if (frame == null) {
-            result.success(null) // No frame available yet
+            result.success(null)
             return
         }
-
         val x = call.argument<Double>("x")?.toFloat()
         val y = call.argument<Double>("y")?.toFloat()
-
         if (x == null || y == null) {
-            result.error("INVALID_ARGUMENT", "x and y are required", null)
+            result.error("INVALID_ARGUMENT", "x/y required", null)
             return
         }
-
+        
+        // Convert to pixels
         val screenX = x * sceneView.width
         val screenY = y * sceneView.height
-
-        val hits: List<HitResult> = frame.hitTest(screenX, screenY)
+        val hits = frame.hitTest(screenX, screenY)
         val serializedHits = ArrayList<Map<String, Any>>()
-
+        
         for (hit in hits) {
             val trackable = hit.trackable
-            // Accept Planes and Oriented Points
+            // Only return Plane hits or Oriented Points to avoid garbage
             if ((trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) ||
                 (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
-                
                 serializedHits.add(serializeHitResult(hit))
             }
         }
-
         result.success(serializedHits)
     }
     
@@ -1275,41 +1262,21 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // 1. Stop Updates
-        sceneView.onSessionUpdated = null 
-        
-        // 2. Clear Method Channels
+        try {
+            sceneView.onSessionUpdated = null
+            sceneView.session?.pause()
+        } catch(e: Exception) {}
+
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        // 3. Clear Lists
-        pointCloudNodes.forEach { sceneView.removeChildNode(it) }
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
-        
-        pointCloudModelInstances.forEach { 
-             // Assumes destroy() exists on ModelInstance (SceneView specific)
-             // If not, just clearing list is fine as SceneView cleanup handles it.
-             // it.destroy() 
-        }
-        pointCloudModelInstances.clear()
-        
-        nodesMap.values.forEach { sceneView.removeChildNode(it) }
         nodesMap.clear()
-        
-        anchorNodesMap.values.forEach { 
-            it.anchor?.detach()
-            sceneView.removeChildNode(it) 
-        }
         anchorNodesMap.clear()
-
-        // 4. Remove View
-        rootLayout.removeAllViews()
+        currentFrame = null
         
-        // 5. Pause Session immediately
-        try {
-            sceneView.session?.pause()
-        } catch(e: Exception) {}
+        rootLayout.removeAllViews()
     }
 }
