@@ -77,13 +77,11 @@ class ArView(
     private var isDestroyed = false
 
     private val detectedPlanes = mutableSetOf<Plane>()
-
+    
     // Point Cloud
     private var pointCloudModelInstances = mutableListOf<ModelInstance>()
     private val pointCloudNodes = mutableListOf<PointCloudNode>()
     private val pointCloudNodePool = ArrayList<PointCloudNode>()
-    
-    // VISIBILITY STATE
     private var showPointCloud = false
 
     private var lastPointCloudTimestamp: Long? = null
@@ -125,8 +123,7 @@ class ArView(
         )
     }
 
-    // Legacy handler - returns null to prevent using stale frames
-    // Real-time hits are now pushed via onCenterHitResult
+    // Legacy handler - returns null. We use onCenterHitResult now.
     private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
         result.success(null)
     }
@@ -217,6 +214,7 @@ class ArView(
             } else if (call.hasArgument("hide")) {
                 showPointCloud = !(call.argument<Boolean>("hide") ?: false)
             }
+
             pointCloudNodes.forEach { node ->
                 node.isVisible = showPointCloud
             }
@@ -231,29 +229,36 @@ class ArView(
             if (!isSessionPaused && !isDestroyed) {
                 latestLightEstimate = frame.lightEstimate
                 
-                // THROTTLING: Skip frame processing to reduce load (Every 3rd frame)
+                // --- THROTTLE: ONLY PROCESS EVERY 10th FRAME ---
+                // This prevents the buffer overflow crash.
                 frameCounter++
-                if (frameCounter % 3 != 0) return@sessionUpdated
+                if (frameCounter % 10 != 0) return@sessionUpdated
 
                 // --- 1. CENTER HIT TEST (PUSH TO FLUTTER) ---
                 try {
                     val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
+                    var sentHit = false
+                    
                     for(hit in hits) {
                         val trackable = hit.trackable
-                        // STRICT FILTER: Only Planes (avoid dust/noise)
+                        // ONLY SEND PLANES. 
                         if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
+                             
+                             // If we hit a Floor (Normal Y is 1), but there is another hit that is a Wall,
+                             // we prefer the Wall. ARCore often returns multiple hits.
+                             // However, for simplicity, we send the first valid Plane hit.
+                             
                              val hitData = serializeHitResult(hit)
-                             // Send Camera Pose + Hit Result in one event to sync them
                              val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
                              val payload = mapOf(
                                  "hit" to hitData,
                                  "cameraPose" to cameraPose
                              )
-                             // Push result to Flutter channel
                              mainScope.launch { 
                                  sessionChannel.invokeMethod("onCenterHitResult", payload) 
                              }
-                             break // Only send first valid plane hit
+                             sentHit = true
+                             break 
                         }
                     }
                 } catch(e: Exception) { }
@@ -273,6 +278,7 @@ class ArView(
                                     sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                                 }
                             } else {
+                                // Only update existing planes occasionally to save bandwidth
                                 mainScope.launch {
                                     sessionChannel.invokeMethod("onPlaneUpdated", planeMap)
                                 }
@@ -355,7 +361,7 @@ class ArView(
                         }
                     }
                 } finally {
-                    pointCloud.release() // CRITICAL: Always release
+                    pointCloud.release() 
                 }
             }
         }
@@ -371,7 +377,6 @@ class ArView(
                     is Point -> trackable.trackingState == TrackingState.TRACKING
                     else -> false
                 }
-
                 if (!isValidHit) {
                     false
                 } else {
@@ -1238,27 +1243,21 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         
-        // 1. Stop processing frames
-        sceneView.onSessionUpdated = null 
-        
-        // 2. Pause the session immediately (SceneView handles the rest)
-        sceneView.session?.pause()
-        
-        // 3. Clear Listeners
+        try {
+            sceneView.onSessionUpdated = null
+            // FIX: Use session?.pause() to avoid unresolved reference
+            sceneView.session?.pause()
+        } catch(e: Exception) {}
+
         sessionChannel.setMethodCallHandler(null)
         objectChannel.setMethodCallHandler(null)
         anchorChannel.setMethodCallHandler(null)
 
-        // 4. Clear Native Memory Lists
         pointCloudNodes.clear()
         pointCloudNodePool.clear()
         nodesMap.clear()
         anchorNodesMap.clear()
         
-        // 5. Remove Views
         rootLayout.removeAllViews()
-        
-        // 6. Final Destroy
-        sceneView.destroy()
     }
 }
