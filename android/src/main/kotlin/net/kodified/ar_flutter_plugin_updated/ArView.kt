@@ -201,7 +201,7 @@ class ArView(
         
         // Manually resume session since we have no lifecycle observer
         try {
-            sceneView.resume()
+            sceneView.session?.resume()
         } catch (e: Exception) {
             Log.e(TAG, "Error resuming session in init", e)
         }
