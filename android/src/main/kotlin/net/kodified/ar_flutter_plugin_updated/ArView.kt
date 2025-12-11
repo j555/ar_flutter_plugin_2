@@ -586,6 +586,9 @@ class ArView(
                         3 -> Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                         else -> Config.PlaneFindingMode.DISABLED
                     }
+
+                    // ADD THIS LINE TO STOP THE CLOUDANCHOR LOGS:
+                    // cloudAnchorMode = Config.CloudAnchorMode.DISABLED
                 }
             }
 
