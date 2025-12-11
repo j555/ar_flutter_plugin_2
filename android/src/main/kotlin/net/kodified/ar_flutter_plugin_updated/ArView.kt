@@ -334,7 +334,7 @@ class ArView(
 
                 // --- 1. CENTER HIT TEST ---
                 // FIX 3: Only run this heavy logic if explicitly enabled and tracking is stable
-                if (isCenterHitTrackingEnabled && session.camera.trackingState == TrackingState.TRACKING) { 
+                if (isCenterHitTrackingEnabled && frame.camera.trackingState == TrackingState.TRACKING) { 
                     try {
                         if (sceneView.width > 0 && sceneView.height > 0) {
                             // Hit test at the center of the screen
