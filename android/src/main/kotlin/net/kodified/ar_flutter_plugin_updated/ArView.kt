@@ -92,9 +92,7 @@ class ArView(
     @Volatile
     private var isCenterHitTrackingEnabled = false
 
-    // ---------------------------------------------------------
-    // [ADDED] Cache the latest frame to access Intrinsics later
-    // ---------------------------------------------------------
+    // FIX: Store the latest frame here so we can access it on demand
     private var currentArFrame: Frame? = null
 
     private val detectedPlanes = mutableSetOf<Plane>()
@@ -153,11 +151,10 @@ class ArView(
             "enableCamera" -> handleEnableCamera(result)
             "hitTest" -> handleHitTest(call, result)
             
-            // ---------------------------------------------------------
-            // [ADDED] Handler to return Raw Camera Intrinsics
-            // ---------------------------------------------------------
+            // --- ADDED: Camera Intrinsics ---
             "getImageIntrinsics" -> handleGetImageIntrinsics(result)
 
+            // --- ADDED: Center Hit Tracking ---
             "startCenterHitTracking" -> {
                 isCenterHitTrackingEnabled = true
                 result.success(null)
@@ -170,13 +167,12 @@ class ArView(
         }
     }
 
-    // ---------------------------------------------------------
-    // [ADDED] Implementation to extract hardware lens data
-    // ---------------------------------------------------------
+    // --- NEW METHOD: Get Camera Intrinsics ---
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
-        Log.d(TAG, "handleGetImageIntrinsics called")
+        // Changed to Log.e so it shows up even with filters on
+        Log.e(TAG, "handleGetImageIntrinsics called")
         try {
-            // Use the cached frame
+            // FIX: Use the cached currentArFrame instead of sceneView.arFrame
             val frame = currentArFrame
             if (frame != null) {
                 val camera = frame.camera
@@ -186,15 +182,15 @@ class ArView(
                 val p = intrinsics.principalPoint
                 val d = intrinsics.imageDimensions
 
-                Log.d(TAG, "Intrinsics Found: fx=${f[0]}, fy=${f[1]}, w=${d[0]}, h=${d[1]}")
-
-                // Explicitly cast to Double to avoid Kotlin inference errors
+                // FIX: Explicitly cast to Double to satisfy type inference
                 val fx: Double = f[0].toDouble()
                 val fy: Double = f[1].toDouble()
                 val cx: Double = p[0].toDouble()
                 val cy: Double = p[1].toDouble()
                 val w: Double = d[0].toDouble()
                 val h: Double = d[1].toDouble()
+
+                Log.e(TAG, "Intrinsics Found: fx=$fx, fy=$fy, w=$w, h=$h")
 
                 val data: Map<String, Double> = mapOf(
                     "fx" to fx,
@@ -269,15 +265,11 @@ class ArView(
     }
 
     init {
-        // Sync our custom lifecycle with the activity's current state immediately
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        
-        // Listen for future activity lifecycle updates
         activityLifecycle.addObserver(this)
 
         sceneView = ARSceneView(
             context = viewContext,
-            // Pass OUR custom lifecycle registry. 
             sharedLifecycle = lifecycleRegistry, 
             sessionConfiguration = { session, config ->
                 config.apply {
@@ -296,7 +288,6 @@ class ArView(
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
         
-        // Move to RESUMED if activity is already resumed to start the camera
         if (activityLifecycle.currentState == Lifecycle.State.RESUMED) {
             lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         }
@@ -345,9 +336,7 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
-            // ---------------------------------------------------------
-            // [ADDED] Capture Frame immediately
-            // ---------------------------------------------------------
+            // FIX: Capture the frame here so we can access it in handleGetImageIntrinsics
             currentArFrame = frame
 
             if (isSessionPaused || isDestroyed) return@sessionUpdated
@@ -390,28 +379,34 @@ class ArView(
                     }
                 }
 
-                // --- 1. CENTER HIT TEST ---
+                // --- 1. CENTER HIT TEST (ADDED LOGIC) ---
                 if (isCenterHitTrackingEnabled && frame.camera.trackingState == TrackingState.TRACKING) { 
                     try {
                         if (sceneView.width > 0 && sceneView.height > 0) {
+                            // Hit test at the center of the screen
                             val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
                             for(hit in hits) {
                                 val trackable = hit.trackable
+                                // Only process Plane hits whose pose is inside the plane polygon
                                 if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
                                      val hitData = serializeHitResult(hit)
+                                     // Camera Pose is needed for distance and angle calculations
                                      val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
                                      val payload = mapOf(
                                          "hit" to hitData,
                                          "cameraPose" to cameraPose
                                      )
                                      mainScope.launch { 
+                                         // Invoke the Dart method to push data to the UI for calculation
                                          if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
                                      }
                                      break 
                                 }
                             }
                         }
-                    } catch(e: Exception) {}
+                    } catch(e: Exception) { 
+                        // Failures here are normal if AR is unstable.
+                    }
                 }
 
                 // --- 2. PLANE UPDATES ---
@@ -656,9 +651,6 @@ class ArView(
                         3 -> Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                         else -> Config.PlaneFindingMode.DISABLED
                     }
-
-                    // ADD THIS LINE TO STOP THE CLOUDANCHOR LOGS:
-                    // cloudAnchorMode = Config.CloudAnchorMode.DISABLED
                 }
             }
 
