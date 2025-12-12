@@ -88,7 +88,7 @@ class ArView(
     @Volatile
     private var isProcessingFrame = false
 
-    // FIX 1: Control flag for continuous center hit tracking
+    // Control flag for continuous center hit tracking
     @Volatile
     private var isCenterHitTrackingEnabled = false
 
@@ -114,7 +114,6 @@ class ArView(
     private var latestLightEstimate: LightEstimate? = null
 
     // --- LifecycleOwner Implementation ---
-    // Overriding the property 'lifecycle' as required by the interface
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
 
@@ -149,7 +148,10 @@ class ArView(
             "enableCamera" -> handleEnableCamera(result)
             "hitTest" -> handleHitTest(call, result)
             
-            // FIX 2: Implement the missing method to start the live hit-test loop
+            // --- ADDED: Camera Intrinsics ---
+            "getImageIntrinsics" -> handleGetImageIntrinsics(result)
+
+            // --- ADDED: Center Hit Tracking ---
             "startCenterHitTracking" -> {
                 isCenterHitTrackingEnabled = true
                 result.success(null)
@@ -159,6 +161,35 @@ class ArView(
                 result.success(null)
             }
             else -> result.notImplemented()
+        }
+    }
+
+    // --- NEW METHOD: Get Camera Intrinsics ---
+    private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+        try {
+            val frame = sceneView.arFrame
+            if (frame != null) {
+                val camera = frame.camera
+                val intrinsics = camera.imageIntrinsics
+                
+                val f = intrinsics.focalLength
+                val p = intrinsics.principalPoint
+                val d = intrinsics.imageDimensions
+
+                val data = mapOf(
+                    "fx" to f[0].toDouble(),
+                    "fy" to f[1].toDouble(),
+                    "cx" to p[0].toDouble(),
+                    "cy" to p[1].toDouble(),
+                    "width" to d[0].toDouble(),
+                    "height" to d[1].toDouble()
+                )
+                result.success(data)
+            } else {
+                result.error("NO_FRAME", "AR Frame not available", null)
+            }
+        } catch (e: Exception) {
+            result.error("INTRINSICS_ERROR", e.message, null)
         }
     }
 
@@ -332,8 +363,7 @@ class ArView(
                     }
                 }
 
-                // --- 1. CENTER HIT TEST ---
-                // FIX 3: Only run this heavy logic if explicitly enabled and tracking is stable
+                // --- 1. CENTER HIT TEST (ADDED LOGIC) ---
                 if (isCenterHitTrackingEnabled && frame.camera.trackingState == TrackingState.TRACKING) { 
                     try {
                         if (sceneView.width > 0 && sceneView.height > 0) {
@@ -359,7 +389,7 @@ class ArView(
                             }
                         }
                     } catch(e: Exception) { 
-                        // Failures here are normal if AR is unstable. Log locally if needed.
+                        // Failures here are normal if AR is unstable.
                     }
                 }
 
