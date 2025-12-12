@@ -174,6 +174,7 @@ class ArView(
     // [ADDED] Implementation to extract hardware lens data
     // ---------------------------------------------------------
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+        Log.d(TAG, "handleGetImageIntrinsics called")
         try {
             // Use the cached frame
             val frame = currentArFrame
@@ -184,6 +185,8 @@ class ArView(
                 val f = intrinsics.focalLength
                 val p = intrinsics.principalPoint
                 val d = intrinsics.imageDimensions
+
+                Log.d(TAG, "Intrinsics Found: fx=${f[0]}, fy=${f[1]}, w=${d[0]}, h=${d[1]}")
 
                 // Explicitly cast to Double to avoid Kotlin inference errors
                 val fx: Double = f[0].toDouble()
@@ -203,9 +206,11 @@ class ArView(
                 )
                 result.success(data)
             } else {
+                Log.e(TAG, "Error: AR Frame is NULL")
                 result.error("NO_FRAME", "AR Frame not available", null)
             }
         } catch (e: Exception) {
+            Log.e(TAG, "Error getting intrinsics: ${e.message}")
             result.error("INTRINSICS_ERROR", e.message, null)
         }
     }
