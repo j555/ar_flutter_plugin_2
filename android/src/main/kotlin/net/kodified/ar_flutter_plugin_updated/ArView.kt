@@ -92,6 +92,9 @@ class ArView(
     @Volatile
     private var isCenterHitTrackingEnabled = false
 
+    // FIX: Store the latest frame here so we can access it on demand
+    private var currentArFrame: Frame? = null
+
     private val detectedPlanes = mutableSetOf<Plane>()
     
     private data class PendingHitTest(
@@ -167,7 +170,8 @@ class ArView(
     // --- NEW METHOD: Get Camera Intrinsics ---
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
         try {
-            val frame = sceneView.arFrame
+            // FIX: Use the cached currentArFrame instead of sceneView.arFrame
+            val frame = currentArFrame
             if (frame != null) {
                 val camera = frame.camera
                 val intrinsics = camera.imageIntrinsics
@@ -176,13 +180,21 @@ class ArView(
                 val p = intrinsics.principalPoint
                 val d = intrinsics.imageDimensions
 
-                val data = mapOf(
-                    "fx" to f[0].toDouble(),
-                    "fy" to f[1].toDouble(),
-                    "cx" to p[0].toDouble(),
-                    "cy" to p[1].toDouble(),
-                    "width" to d[0].toDouble(),
-                    "height" to d[1].toDouble()
+                // FIX: Explicitly cast to Double to satisfy type inference
+                val fx: Double = f[0].toDouble()
+                val fy: Double = f[1].toDouble()
+                val cx: Double = p[0].toDouble()
+                val cy: Double = p[1].toDouble()
+                val w: Double = d[0].toDouble()
+                val h: Double = d[1].toDouble()
+
+                val data: Map<String, Double> = mapOf(
+                    "fx" to fx,
+                    "fy" to fy,
+                    "cx" to cx,
+                    "cy" to cy,
+                    "width" to w,
+                    "height" to h
                 )
                 result.success(data)
             } else {
@@ -323,6 +335,9 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
+            // FIX: Capture the frame here so we can access it in handleGetImageIntrinsics
+            currentArFrame = frame
+
             if (isSessionPaused || isDestroyed) return@sessionUpdated
             
             // STRICT THROTTLING
