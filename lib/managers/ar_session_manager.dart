@@ -28,6 +28,19 @@ class ARSessionManager {
     _channel.setMethodCallHandler(_platformCallHandler);
   }
 
+  Future<Map<String, double>?> getImageIntrinsics() async {
+    try {
+      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('getImageIntrinsics');
+      if (result == null) return null;
+      
+      // Cast to the expected type
+      return Map<String, double>.from(result);
+    } catch (e) {
+      if (debug) print("getImageIntrinsics Error: $e");
+      return null;
+    }
+  }
+
   // === FIX: Hit Test ===
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
