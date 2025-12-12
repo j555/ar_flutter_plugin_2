@@ -92,7 +92,9 @@ class ArView(
     @Volatile
     private var isCenterHitTrackingEnabled = false
 
-    // FIX: Store the latest frame here so we can access it on demand
+    // ---------------------------------------------------------
+    // [ADDED] Cache the latest frame to access Intrinsics later
+    // ---------------------------------------------------------
     private var currentArFrame: Frame? = null
 
     private val detectedPlanes = mutableSetOf<Plane>()
@@ -151,10 +153,11 @@ class ArView(
             "enableCamera" -> handleEnableCamera(result)
             "hitTest" -> handleHitTest(call, result)
             
-            // --- ADDED: Camera Intrinsics ---
+            // ---------------------------------------------------------
+            // [ADDED] Handler to return Raw Camera Intrinsics
+            // ---------------------------------------------------------
             "getImageIntrinsics" -> handleGetImageIntrinsics(result)
 
-            // --- ADDED: Center Hit Tracking ---
             "startCenterHitTracking" -> {
                 isCenterHitTrackingEnabled = true
                 result.success(null)
@@ -167,10 +170,12 @@ class ArView(
         }
     }
 
-    // --- NEW METHOD: Get Camera Intrinsics ---
+    // ---------------------------------------------------------
+    // [ADDED] Implementation to extract hardware lens data
+    // ---------------------------------------------------------
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
         try {
-            // FIX: Use the cached currentArFrame instead of sceneView.arFrame
+            // Use the cached frame
             val frame = currentArFrame
             if (frame != null) {
                 val camera = frame.camera
@@ -180,7 +185,7 @@ class ArView(
                 val p = intrinsics.principalPoint
                 val d = intrinsics.imageDimensions
 
-                // FIX: Explicitly cast to Double to satisfy type inference
+                // Explicitly cast to Double to avoid Kotlin inference errors
                 val fx: Double = f[0].toDouble()
                 val fy: Double = f[1].toDouble()
                 val cx: Double = p[0].toDouble()
@@ -335,7 +340,9 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = sessionUpdated@{ session, frame ->
-            // FIX: Capture the frame here so we can access it in handleGetImageIntrinsics
+            // ---------------------------------------------------------
+            // [ADDED] Capture Frame immediately
+            // ---------------------------------------------------------
             currentArFrame = frame
 
             if (isSessionPaused || isDestroyed) return@sessionUpdated
@@ -378,34 +385,28 @@ class ArView(
                     }
                 }
 
-                // --- 1. CENTER HIT TEST (ADDED LOGIC) ---
+                // --- 1. CENTER HIT TEST ---
                 if (isCenterHitTrackingEnabled && frame.camera.trackingState == TrackingState.TRACKING) { 
                     try {
                         if (sceneView.width > 0 && sceneView.height > 0) {
-                            // Hit test at the center of the screen
                             val hits = frame.hitTest(sceneView.width / 2.0f, sceneView.height / 2.0f)
                             for(hit in hits) {
                                 val trackable = hit.trackable
-                                // Only process Plane hits whose pose is inside the plane polygon
                                 if (trackable is Plane && trackable.isPoseInPolygon(hit.hitPose)) {
                                      val hitData = serializeHitResult(hit)
-                                     // Camera Pose is needed for distance and angle calculations
                                      val cameraPose = sceneView.cameraNode.worldTransform.toMatrix().data.map { it.toDouble() }
                                      val payload = mapOf(
                                          "hit" to hitData,
                                          "cameraPose" to cameraPose
                                      )
                                      mainScope.launch { 
-                                         // Invoke the Dart method to push data to the UI for calculation
                                          if(!isDestroyed) sessionChannel.invokeMethod("onCenterHitResult", payload) 
                                      }
                                      break 
                                 }
                             }
                         }
-                    } catch(e: Exception) { 
-                        // Failures here are normal if AR is unstable.
-                    }
+                    } catch(e: Exception) {}
                 }
 
                 // --- 2. PLANE UPDATES ---
