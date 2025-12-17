@@ -135,6 +135,31 @@ class IosARView: NSObject, FlutterPlatformView, ARSCNViewDelegate, UIGestureReco
                 } else {
                     result(FlutterError(code: "NO_LIGHT_ESTIMATE", message: "Light estimate not available", details: nil))
                 }
+
+            case "getImageIntrinsics":
+                guard let frame = sceneView.session.currentFrame else {
+                    result(FlutterError(code: "NO_FRAME", message: "ARFrame is null", details: nil))
+                    return
+                }
+                
+                let intrinsics = frame.camera.intrinsics
+                let imageResolution = frame.camera.imageResolution
+                let viewSize = sceneView.bounds.size
+                
+                // Return dictionary matching Android structure
+                let args: [String: Double] = [
+                    "fx": Double(intrinsics[0][0]),
+                    "fy": Double(intrinsics[1][1]),
+                    "cx": Double(intrinsics[2][0]),
+                    "cy": Double(intrinsics[2][1]),
+                    "width": Double(imageResolution.width),
+                    "height": Double(imageResolution.height),
+                    "viewWidth": Double(viewSize.width),
+                    "viewHeight": Double(viewSize.height)
+                ]
+                result(args)
+                break
+                
             // ==========================================================
             // CUSTOM CODE END
             // ==========================================================

@@ -169,10 +169,7 @@ class ArView(
 
     // --- NEW METHOD: Get Camera Intrinsics ---
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
-        // Changed to Log.e so it shows up even with filters on
-        Log.e(TAG, "handleGetImageIntrinsics called")
         try {
-            // FIX: Use the cached currentArFrame instead of sceneView.arFrame
             val frame = currentArFrame
             if (frame != null) {
                 val camera = frame.camera
@@ -182,31 +179,26 @@ class ArView(
                 val p = intrinsics.principalPoint
                 val d = intrinsics.imageDimensions
 
-                // FIX: Explicitly cast to Double to satisfy type inference
-                val fx: Double = f[0].toDouble()
-                val fy: Double = f[1].toDouble()
-                val cx: Double = p[0].toDouble()
-                val cy: Double = p[1].toDouble()
-                val w: Double = d[0].toDouble()
-                val h: Double = d[1].toDouble()
-
-                Log.e(TAG, "Intrinsics Found: fx=$fx, fy=$fy, w=$w, h=$h")
+                // Get the actual size of the AR View on screen
+                // This allows us to calculate the exact crop factor in Flutter
+                val viewW = sceneView.width.toDouble()
+                val viewH = sceneView.height.toDouble()
 
                 val data: Map<String, Double> = mapOf(
-                    "fx" to fx,
-                    "fy" to fy,
-                    "cx" to cx,
-                    "cy" to cy,
-                    "width" to w,
-                    "height" to h
+                    "fx" to f[0].toDouble(),
+                    "fy" to f[1].toDouble(),
+                    "cx" to p[0].toDouble(),
+                    "cy" to p[1].toDouble(),
+                    "width" to d[0].toDouble(), // Sensor/Image Stream Width
+                    "height" to d[1].toDouble(), // Sensor/Image Stream Height
+                    "viewWidth" to viewW,        // Actual Screen Width
+                    "viewHeight" to viewH        // Actual Screen Height
                 )
                 result.success(data)
             } else {
-                Log.e(TAG, "Error: AR Frame is NULL")
                 result.error("NO_FRAME", "AR Frame not available", null)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error getting intrinsics: ${e.message}")
             result.error("INTRINSICS_ERROR", e.message, null)
         }
     }
