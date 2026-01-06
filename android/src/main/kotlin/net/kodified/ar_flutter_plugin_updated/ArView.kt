@@ -695,31 +695,37 @@ class ArView(
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
         val frame = currentArFrame
-        if (isDestroyed || frame == null || frame.camera.trackingState != TrackingState.TRACKING) {
-            result.error("NOT_TRACKING", "Camera tracking is not stable enough for a bundle.", null)
+        val session = arSession
+        if (isDestroyed || frame == null || session == null || frame.camera.trackingState != TrackingState.TRACKING) {
+            result.error("NOT_TRACKING", "Tracking not stable", null)
             return
         }
 
-        // Capture all metadata ATOMICALLY from the exact same frame
+        // 🎯 THE DOTS FIX: Native-speed visibility toggle
+        // Temporarily disable the plane and point cloud renderers
+        val wasPlaneVisible = arSceneView?.planeRenderer?.isEnabled ?: true
+        arSceneView?.planeRenderer?.isEnabled = false
+        // If you are using the plugin's default point cloud:
+        arSceneView?.pointCloudNode?.isEnabled = false 
+
         val camera = frame.camera
         val intrinsics = camera.imageIntrinsics
-        
-        // Projection Matrix
         val projMatrix = FloatArray(16)
         camera.getProjectionMatrix(projMatrix, 0, 0.01f, 100.0f)
-        
-        // View Matrix (Pose)
         val viewMatrix = FloatArray(16)
         camera.getViewMatrix(viewMatrix, 0)
 
-        // Image Capture via PixelCopy
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        
         PixelCopy.request(sceneView, bitmap, { copyResult ->
+            // 🎯 RESTORE visibility immediately after the pixels are copied
+            arSceneView?.planeRenderer?.isEnabled = wasPlaneVisible
+            arSceneView?.pointCloudNode?.isEnabled = true
+
             if (copyResult == PixelCopy.SUCCESS) {
                 val byteStream = java.io.ByteArrayOutputStream()
                 bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
-                
-                val response = mapOf(
+                result.success(mapOf(
                     "image" to byteStream.toByteArray(),
                     "projectionMatrix" to projMatrix.map { it.toDouble() },
                     "viewMatrix" to viewMatrix.map { it.toDouble() },
@@ -731,10 +737,9 @@ class ArView(
                         "width" to intrinsics.imageDimensions[0].toDouble(),
                         "height" to intrinsics.imageDimensions[1].toDouble()
                     )
-                )
-                result.success(response)
+                ))
             } else {
-                result.error("CAPTURE_FAILED", "PixelCopy failed with code $copyResult", null)
+                result.error("CAPTURE_FAILED", "PixelCopy failed", null)
             }
         }, Handler(Looper.getMainLooper()))
     }
