@@ -697,63 +697,66 @@ class ArView(
     }
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
-        val frame = currentArFrame
-        val session = sceneView.session 
-        if (isDestroyed || frame == null || session == null || frame.camera.trackingState != TrackingState.TRACKING) {
-            result.error("NOT_TRACKING", "Tracking not stable", null)
-            return
-        }
-
-        // 🎯 THE DOTS LOCK: Tell the background thread to stop drawing dots immediately
-        isCapturingBundle = true
-
-        // Store original states to restore later
-        val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
-        val wasPlaneVisible = sceneView.planeRenderer.isVisible
-        
-        // Kill the renderers immediately
-        sceneView.planeRenderer.isEnabled = false
-        sceneView.planeRenderer.isVisible = false
-        
-        // Hide all current point cloud dots manually
-        pointCloudNodes.forEach { it.isVisible = false }
-
-        val camera = frame.camera
-        val intrinsics = camera.imageIntrinsics
-        val projMatrix = FloatArray(16)
-        camera.getProjectionMatrix(projMatrix, 0, 0.01f, 100.0f)
-        val viewMatrix = FloatArray(16)
-        camera.getViewMatrix(viewMatrix, 0)
-
-        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-        
-        PixelCopy.request(sceneView, bitmap, { copyResult ->
-            // 🎯 RESTORE: Capture is done, background thread can draw again
-            isCapturingBundle = false
-            sceneView.planeRenderer.isEnabled = wasPlaneEnabled
-            sceneView.planeRenderer.isVisible = wasPlaneVisible
-            // Background thread will automatically re-show pointCloudNodes on the next update
-
-            if (copyResult == PixelCopy.SUCCESS) {
-                val byteStream = java.io.ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
-                result.success(mapOf(
-                    "image" to byteStream.toByteArray(),
-                    "projectionMatrix" to projMatrix.map { it.toDouble() },
-                    "viewMatrix" to viewMatrix.map { it.toDouble() },
-                    "intrinsics" to mapOf(
-                        "fx" to intrinsics.focalLength[0].toDouble(),
-                        "fy" to intrinsics.focalLength[1].toDouble(),
-                        "cx" to intrinsics.principalPoint[0].toDouble(),
-                        "cy" to intrinsics.principalPoint[1].toDouble(),
-                        "width" to intrinsics.imageDimensions[0].toDouble(),
-                        "height" to intrinsics.imageDimensions[1].toDouble()
-                    )
-                ))
-            } else {
-                result.error("CAPTURE_FAILED", "PixelCopy failed", null)
+        // 🎯 Use the mainScope to ensure we are on the UI thread for scene changes
+        mainScope.launch(Dispatchers.Main) {
+            val frame = currentArFrame
+            val session = sceneView.session 
+            if (isDestroyed || frame == null || session == null || frame.camera.trackingState != TrackingState.TRACKING) {
+                result.error("NOT_TRACKING", "Tracking not stable", null)
+                return@launch
             }
-        }, Handler(Looper.getMainLooper()))
+
+            // 🎯 THE DOTS FIX: Stop background updates and clear the scene
+            isCapturingBundle = true
+
+            // 1. Hide Planes
+            val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
+            sceneView.planeRenderer.isEnabled = false
+            
+            // 2. Remove all existing dots from the 3D scene immediately
+            val activeDots = pointCloudNodes.toList() // Copy current list
+            activeDots.forEach { sceneView.removeChildNode(it) }
+
+            val camera = frame.camera
+            val intrinsics = camera.imageIntrinsics
+            val projMatrix = FloatArray(16)
+            camera.getProjectionMatrix(projMatrix, 0, 0.01f, 100.0f)
+            val viewMatrix = FloatArray(16)
+            camera.getViewMatrix(viewMatrix, 0)
+
+            val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+            
+            PixelCopy.request(sceneView, bitmap, { copyResult ->
+                // 🎯 RESTORE: Capture is done, re-add the dots and enable planes
+                isCapturingBundle = false
+                sceneView.planeRenderer.isEnabled = wasPlaneEnabled
+                activeDots.forEach { sceneView.addChildNode(it) }
+
+                if (copyResult == PixelCopy.SUCCESS) {
+                    // Compress on IO thread to keep UI smooth
+                    mainScope.launch(Dispatchers.IO) {
+                        val byteStream = java.io.ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+                        val data = mapOf(
+                            "image" to byteStream.toByteArray(),
+                            "projectionMatrix" to projMatrix.map { it.toDouble() },
+                            "viewMatrix" to viewMatrix.map { it.toDouble() },
+                            "intrinsics" to mapOf(
+                                "fx" to intrinsics.focalLength[0].toDouble(),
+                                "fy" to intrinsics.focalLength[1].toDouble(),
+                                "cx" to intrinsics.principalPoint[0].toDouble(),
+                                "cy" to intrinsics.principalPoint[1].toDouble(),
+                                "width" to intrinsics.imageDimensions[0].toDouble(),
+                                "height" to intrinsics.imageDimensions[1].toDouble()
+                            )
+                        )
+                        withContext(Dispatchers.Main) { result.success(data) }
+                    }
+                } else {
+                    result.error("CAPTURE_FAILED", "PixelCopy failed", null)
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
     }
 
     private fun handleEnableCamera(result: MethodChannel.Result) {
