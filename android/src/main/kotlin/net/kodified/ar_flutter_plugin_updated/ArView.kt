@@ -309,9 +309,9 @@ class ArView(
         }
     }
 
-    private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
-        result.success(null) 
-    }
+    // private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
+    //     result.success(null) 
+    // }
 
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
@@ -708,6 +708,7 @@ class ArView(
     }
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
+        // 🎯 Move to Main Thread for GPU synchronization
         mainScope.launch(Dispatchers.Main) {
             val frame = currentArFrame
             val session = sceneView.session 
@@ -716,23 +717,23 @@ class ArView(
                 return@launch
             }
 
-            // 🎯 THE SHUTTER LOCK: Prevent new dots from being created during capture
+            // 🎯 LOCK background updates
             isCapturingBundle = true
 
-            // 1. Store original states to restore later
+            // 1. Store original states
             val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
             val wasPlaneVisible = sceneView.planeRenderer.isVisible
-            
-            // 2. Aggressively hide ALL visual overlays
+            val handGuide = rootLayout.findViewWithTag<View>("hand_motion_layout")
+
+            // 2. AGGRESSIVE HIDE: Kill all renderers and remove nodes from the scene
             sceneView.planeRenderer.isEnabled = false
             sceneView.planeRenderer.isVisible = false
+            worldOriginNode?.isVisible = false
+            handGuide?.visibility = View.GONE
             
-            // Remove the point cloud nodes from the 3D scene entirely for this frame
+            // Remove every dot node from the scene immediately
             val activeDots = pointCloudNodes.toList()
             activeDots.forEach { sceneView.removeChildNode(it) }
-            
-            // Hide world origin if it exists
-            worldOriginNode?.isVisible = false
 
             val camera = frame.camera
             val intrinsics = camera.imageIntrinsics
@@ -743,16 +744,16 @@ class ArView(
 
             val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
             
-            // 🎯 SHUTTER SYNC: Wait 50ms (3 frames at 60fps) to ensure the GPU 
-            // has cleared the dots from the buffer before we copy the pixels.
+            // 🎯 SHUTTER SYNC: Wait 64ms (~4 frames) for the GPU to clear the dots from the buffer
             Handler(Looper.getMainLooper()).postDelayed({
                 if (isDestroyed) return@postDelayed
                 
                 PixelCopy.request(sceneView, bitmap, { copyResult ->
-                    // RESTORE original states immediately after the shutter clicks
+                    // RESTORE everything after shutter clicks
                     isCapturingBundle = false
                     sceneView.planeRenderer.isEnabled = wasPlaneEnabled
                     sceneView.planeRenderer.isVisible = wasPlaneVisible
+                    handGuide?.visibility = View.VISIBLE
                     activeDots.forEach { sceneView.addChildNode(it) }
                     worldOriginNode?.isVisible = true
 
@@ -779,7 +780,7 @@ class ArView(
                         result.error("CAPTURE_FAILED", "PixelCopy failed", null)
                     }
                 }, Handler(Looper.getMainLooper()))
-            }, 50) 
+            }, 64) 
         }
     }
 
