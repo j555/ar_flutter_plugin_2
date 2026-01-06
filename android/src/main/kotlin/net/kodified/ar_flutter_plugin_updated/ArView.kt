@@ -163,6 +163,7 @@ class ArView(
                 isCenterHitTrackingEnabled = false
                 result.success(null)
             }
+            "captureBundle" -> handleCaptureBundle(result)
             else -> result.notImplemented()
         }
     }
@@ -690,6 +691,52 @@ class ArView(
         } catch (e: Exception) {
             result.error("DISABLE_CAMERA_ERROR", e.message, null)
         }
+    }
+
+    private fun handleCaptureBundle(result: MethodChannel.Result) {
+        val frame = currentArFrame
+        if (isDestroyed || frame == null || frame.camera.trackingState != TrackingState.TRACKING) {
+            result.error("NOT_TRACKING", "Camera tracking is not stable enough for a bundle.", null)
+            return
+        }
+
+        // Capture all metadata ATOMICALLY from the exact same frame
+        val camera = frame.camera
+        val intrinsics = camera.imageIntrinsics
+        
+        // Projection Matrix
+        val projMatrix = FloatArray(16)
+        camera.getProjectionMatrix(projMatrix, 0, 0.01f, 100.0f)
+        
+        // View Matrix (Pose)
+        val viewMatrix = FloatArray(16)
+        camera.getViewMatrix(viewMatrix, 0)
+
+        // Image Capture via PixelCopy
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(sceneView, bitmap, { copyResult ->
+            if (copyResult == PixelCopy.SUCCESS) {
+                val byteStream = java.io.ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+                
+                val response = mapOf(
+                    "image" to byteStream.toByteArray(),
+                    "projectionMatrix" to projMatrix.map { it.toDouble() },
+                    "viewMatrix" to viewMatrix.map { it.toDouble() },
+                    "intrinsics" to mapOf(
+                        "fx" to intrinsics.focalLength[0].toDouble(),
+                        "fy" to intrinsics.focalLength[1].toDouble(),
+                        "cx" to intrinsics.principalPoint[0].toDouble(),
+                        "cy" to intrinsics.principalPoint[1].toDouble(),
+                        "width" to intrinsics.imageDimensions[0].toDouble(),
+                        "height" to intrinsics.imageDimensions[1].toDouble()
+                    )
+                )
+                result.success(response)
+            } else {
+                result.error("CAPTURE_FAILED", "PixelCopy failed with code $copyResult", null)
+            }
+        }, Handler(Looper.getMainLooper()))
     }
 
     private fun handleEnableCamera(result: MethodChannel.Result) {

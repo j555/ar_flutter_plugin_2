@@ -41,6 +41,15 @@ class ARSessionManager {
     }
   }
 
+  Future<Map<String, dynamic>?> captureBundle() async {
+    try {
+      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('captureBundle');
+      return result != null ? Map<String, dynamic>.from(result) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // === FIX: Hit Test ===
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
