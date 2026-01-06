@@ -695,18 +695,19 @@ class ArView(
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
         val frame = currentArFrame
-        val session = arSession
+        val session = sceneView.session // Corrected from arSession
         if (isDestroyed || frame == null || session == null || frame.camera.trackingState != TrackingState.TRACKING) {
             result.error("NOT_TRACKING", "Tracking not stable", null)
             return
         }
 
         // 🎯 THE DOTS FIX: Native-speed visibility toggle
-        // Temporarily disable the plane and point cloud renderers
-        val wasPlaneVisible = arSceneView?.planeRenderer?.isEnabled ?: true
-        arSceneView?.planeRenderer?.isEnabled = false
-        // If you are using the plugin's default point cloud:
-        arSceneView?.pointCloudNode?.isEnabled = false 
+        val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
+        sceneView.planeRenderer.isEnabled = false
+        
+        // Hide point cloud nodes manually from your pointCloudNodes list
+        val pointCloudStates = pointCloudNodes.map { it.isVisible }
+        pointCloudNodes.forEach { it.isVisible = false }
 
         val camera = frame.camera
         val intrinsics = camera.imageIntrinsics
@@ -718,9 +719,10 @@ class ArView(
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         
         PixelCopy.request(sceneView, bitmap, { copyResult ->
-            // 🎯 RESTORE visibility immediately after the pixels are copied
-            arSceneView?.planeRenderer?.isEnabled = wasPlaneVisible
-            arSceneView?.pointCloudNode?.isEnabled = true
+            // 🎯 RESTORE visibility immediately
+            sceneView.planeRenderer.isEnabled = wasPlaneEnabled
+            // Restore each point cloud node to its original visibility state
+            pointCloudNodes.zip(pointCloudStates).forEach { (node, state) -> node.isVisible = state }
 
             if (copyResult == PixelCopy.SUCCESS) {
                 val byteStream = java.io.ByteArrayOutputStream()
