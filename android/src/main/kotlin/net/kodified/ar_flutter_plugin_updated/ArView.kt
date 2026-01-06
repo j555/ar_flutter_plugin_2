@@ -92,6 +92,9 @@ class ArView(
     @Volatile
     private var isCenterHitTrackingEnabled = false
 
+    @Volatile
+    private var isCapturingBundle = false
+
     // FIX: Store the latest frame here so we can access it on demand
     private var currentArFrame: Frame? = null
 
@@ -332,7 +335,7 @@ class ArView(
             // FIX: Capture the frame here so we can access it in handleGetImageIntrinsics
             currentArFrame = frame
 
-            if (isSessionPaused || isDestroyed) return@sessionUpdated
+            if (isSessionPaused || isDestroyed || isCapturingBundle) return@sessionUpdated
             
             // STRICT THROTTLING
             if (isProcessingFrame) return@sessionUpdated
@@ -695,18 +698,24 @@ class ArView(
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
         val frame = currentArFrame
-        val session = sceneView.session // Corrected from arSession
+        val session = sceneView.session 
         if (isDestroyed || frame == null || session == null || frame.camera.trackingState != TrackingState.TRACKING) {
             result.error("NOT_TRACKING", "Tracking not stable", null)
             return
         }
 
-        // 🎯 THE DOTS FIX: Native-speed visibility toggle
+        // 🎯 THE DOTS LOCK: Tell the background thread to stop drawing dots immediately
+        isCapturingBundle = true
+
+        // Store original states to restore later
         val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
-        sceneView.planeRenderer.isEnabled = false
+        val wasPlaneVisible = sceneView.planeRenderer.isVisible
         
-        // Hide point cloud nodes manually from your pointCloudNodes list
-        val pointCloudStates = pointCloudNodes.map { it.isVisible }
+        // Kill the renderers immediately
+        sceneView.planeRenderer.isEnabled = false
+        sceneView.planeRenderer.isVisible = false
+        
+        // Hide all current point cloud dots manually
         pointCloudNodes.forEach { it.isVisible = false }
 
         val camera = frame.camera
@@ -719,10 +728,11 @@ class ArView(
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         
         PixelCopy.request(sceneView, bitmap, { copyResult ->
-            // 🎯 RESTORE visibility immediately
+            // 🎯 RESTORE: Capture is done, background thread can draw again
+            isCapturingBundle = false
             sceneView.planeRenderer.isEnabled = wasPlaneEnabled
-            // Restore each point cloud node to its original visibility state
-            pointCloudNodes.zip(pointCloudStates).forEach { (node, state) -> node.isVisible = state }
+            sceneView.planeRenderer.isVisible = wasPlaneVisible
+            // Background thread will automatically re-show pointCloudNodes on the next update
 
             if (copyResult == PixelCopy.SUCCESS) {
                 val byteStream = java.io.ByteArrayOutputStream()
