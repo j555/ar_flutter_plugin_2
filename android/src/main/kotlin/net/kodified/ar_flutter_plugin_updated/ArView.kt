@@ -696,8 +696,18 @@ class ArView(
         }
     }
 
+    private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val show = call.argument<Boolean>("show") ?: false
+            showPointCloud = show
+            pointCloudNodes.forEach { it.isVisible = show }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("FEATURE_POINTS_ERROR", e.message, null)
+        }
+    }
+
     private fun handleCaptureBundle(result: MethodChannel.Result) {
-        // 🎯 Use the mainScope to ensure we are on the UI thread for scene changes
         mainScope.launch(Dispatchers.Main) {
             val frame = currentArFrame
             val session = sceneView.session 
@@ -706,16 +716,23 @@ class ArView(
                 return@launch
             }
 
-            // 🎯 THE DOTS FIX: Stop background updates and clear the scene
+            // 🎯 THE SHUTTER LOCK: Prevent new dots from being created during capture
             isCapturingBundle = true
 
-            // 1. Hide Planes
+            // 1. Store original states to restore later
             val wasPlaneEnabled = sceneView.planeRenderer.isEnabled
-            sceneView.planeRenderer.isEnabled = false
+            val wasPlaneVisible = sceneView.planeRenderer.isVisible
             
-            // 2. Remove all existing dots from the 3D scene immediately
-            val activeDots = pointCloudNodes.toList() // Copy current list
+            // 2. Aggressively hide ALL visual overlays
+            sceneView.planeRenderer.isEnabled = false
+            sceneView.planeRenderer.isVisible = false
+            
+            // Remove the point cloud nodes from the 3D scene entirely for this frame
+            val activeDots = pointCloudNodes.toList()
             activeDots.forEach { sceneView.removeChildNode(it) }
+            
+            // Hide world origin if it exists
+            worldOriginNode?.isVisible = false
 
             val camera = frame.camera
             val intrinsics = camera.imageIntrinsics
@@ -726,36 +743,43 @@ class ArView(
 
             val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
             
-            PixelCopy.request(sceneView, bitmap, { copyResult ->
-                // 🎯 RESTORE: Capture is done, re-add the dots and enable planes
-                isCapturingBundle = false
-                sceneView.planeRenderer.isEnabled = wasPlaneEnabled
-                activeDots.forEach { sceneView.addChildNode(it) }
+            // 🎯 SHUTTER SYNC: Wait 50ms (3 frames at 60fps) to ensure the GPU 
+            // has cleared the dots from the buffer before we copy the pixels.
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (isDestroyed) return@postDelayed
+                
+                PixelCopy.request(sceneView, bitmap, { copyResult ->
+                    // RESTORE original states immediately after the shutter clicks
+                    isCapturingBundle = false
+                    sceneView.planeRenderer.isEnabled = wasPlaneEnabled
+                    sceneView.planeRenderer.isVisible = wasPlaneVisible
+                    activeDots.forEach { sceneView.addChildNode(it) }
+                    worldOriginNode?.isVisible = true
 
-                if (copyResult == PixelCopy.SUCCESS) {
-                    // Compress on IO thread to keep UI smooth
-                    mainScope.launch(Dispatchers.IO) {
-                        val byteStream = java.io.ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
-                        val data = mapOf(
-                            "image" to byteStream.toByteArray(),
-                            "projectionMatrix" to projMatrix.map { it.toDouble() },
-                            "viewMatrix" to viewMatrix.map { it.toDouble() },
-                            "intrinsics" to mapOf(
-                                "fx" to intrinsics.focalLength[0].toDouble(),
-                                "fy" to intrinsics.focalLength[1].toDouble(),
-                                "cx" to intrinsics.principalPoint[0].toDouble(),
-                                "cy" to intrinsics.principalPoint[1].toDouble(),
-                                "width" to intrinsics.imageDimensions[0].toDouble(),
-                                "height" to intrinsics.imageDimensions[1].toDouble()
+                    if (copyResult == PixelCopy.SUCCESS) {
+                        mainScope.launch(Dispatchers.IO) {
+                            val byteStream = java.io.ByteArrayOutputStream()
+                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+                            val data = mapOf(
+                                "image" to byteStream.toByteArray(),
+                                "projectionMatrix" to projMatrix.map { it.toDouble() },
+                                "viewMatrix" to viewMatrix.map { it.toDouble() },
+                                "intrinsics" to mapOf(
+                                    "fx" to intrinsics.focalLength[0].toDouble(),
+                                    "fy" to intrinsics.focalLength[1].toDouble(),
+                                    "cx" to intrinsics.principalPoint[0].toDouble(),
+                                    "cy" to intrinsics.principalPoint[1].toDouble(),
+                                    "width" to intrinsics.imageDimensions[0].toDouble(),
+                                    "height" to intrinsics.imageDimensions[1].toDouble()
+                                )
                             )
-                        )
-                        withContext(Dispatchers.Main) { result.success(data) }
+                            withContext(Dispatchers.Main) { result.success(data) }
+                        }
+                    } else {
+                        result.error("CAPTURE_FAILED", "PixelCopy failed", null)
                     }
-                } else {
-                    result.error("CAPTURE_FAILED", "PixelCopy failed", null)
-                }
-            }, Handler(Looper.getMainLooper()))
+                }, Handler(Looper.getMainLooper()))
+            }, 50) 
         }
     }
 
