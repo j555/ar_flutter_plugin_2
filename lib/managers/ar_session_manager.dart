@@ -72,10 +72,13 @@ class ARSessionManager {
 
   Future<Matrix4?> getProjectionMatrix() async {
     try {
-      final serialized = await _channel.invokeMethod<Float64List>('getProjectionMatrix');
+      final serialized = await _channel.invokeMethod<List<dynamic>>('getProjectionMatrix');
       if (serialized == null) return null;
-      return MatrixConverter().fromJson(serialized.toList());
-    } catch (e) { return null; }
+      return MatrixConverter().fromJson(serialized.cast<double>());
+    } catch (e) { 
+      debugPrint("🚨 Error getting Projection Matrix: $e");
+      return null; 
+    }
   }
 
   Future<Map<String, dynamic>?> getLightEstimate() async {
