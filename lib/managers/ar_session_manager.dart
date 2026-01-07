@@ -32,11 +32,8 @@ class ARSessionManager {
     try {
       final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('getImageIntrinsics');
       if (result == null) return null;
-      
-      // Cast to the expected type
       return Map<String, double>.from(result);
     } catch (e) {
-      if (debug) print("getImageIntrinsics Error: $e");
       return null;
     }
   }
@@ -50,14 +47,12 @@ class ARSessionManager {
     }
   }
 
-  // === FIX: Hit Test ===
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
       final List<dynamic>? hitResult = await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
       if (hitResult == null) return null;
       return hitResult.map((e) => ARHitTestResult.fromJson(Map<String, dynamic>.from(e))).toList();
     } catch (e) {
-      if (debug) print("HitTest Error: $e");
       return null;
     }
   }
@@ -72,6 +67,7 @@ class ARSessionManager {
 
   Future<Matrix4?> getProjectionMatrix() async {
     try {
+      // 🎯 FIXED TYPE CAST: Standard List matches the Kotlin .map { it.toDouble() }
       final serialized = await _channel.invokeMethod<List<dynamic>>('getProjectionMatrix');
       if (serialized == null) return null;
       return MatrixConverter().fromJson(serialized.cast<double>());
@@ -89,7 +85,6 @@ class ARSessionManager {
     return null;
   }
   
-  // === RESTORED METHODS FOR 2D ===
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
       final poseList = await _channel.invokeMethod<List<dynamic>>('getAnchorPose', {"anchorId": anchor.name});
@@ -98,7 +93,6 @@ class ARSessionManager {
     } catch (e) { return null; }
   }
   
-  // Standard Platform Handler
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
@@ -116,7 +110,6 @@ class ARSessionManager {
     return Future.value();
   }
 
-  // Init
   onInitialize({
     bool showAnimatedGuide = true,
     bool showFeaturePoints = false,
