@@ -301,6 +301,18 @@ class ArView(
         setupSceneViewListeners()
     }
 
+    private fun handleShowPlanes(call: MethodCall, result: MethodChannel.Result) {
+        sceneView.planeRenderer.isEnabled = call.argument<Boolean>("showPlanes") ?: false
+        result.success(null)
+    }
+
+    private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
+        val show = call.argument<Boolean>("show") ?: false
+        showPointCloud = show
+        pointCloudNodes.forEach { it.isVisible = show }
+        result.success(null)
+    }
+    
     private fun handleGetLightEstimate(result: MethodChannel.Result) {
         val estimate = latestLightEstimate
         if (estimate != null && estimate.state == LightEstimate.State.VALID) {
