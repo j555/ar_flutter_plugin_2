@@ -11,7 +11,7 @@ import 'package:vector_math/vector_math_64.dart';
 
 typedef ARHitResultHandler = void Function(List<ARHitTestResult> hits);
 typedef ARPlaneResultHandler = void Function(int planeCount);
-typedef ARPlaneUpdateHandler = void Function(Map<String, dynamic> data);
+typedef ARPlaneUpdateHandler = void Function(Map<String, dynamic> data); // 🎯 ADD THIS
 typedef ARCenterHitHandler = void Function(Map<String, dynamic> data);
 typedef ErrorHandler = void Function(String error);
 
@@ -23,15 +23,17 @@ class ARSessionManager {
   final int id;
   late ARHitResultHandler onPlaneOrPointTap;
   ARPlaneResultHandler? onPlaneDetected;
-  ARPlaneUpdateHandler? onPlaneUpdate;
+  ARPlaneUpdateHandler? onPlaneUpdate; // 🎯 ADD THIS
   ARCenterHitHandler? onCenterHitResult;
   ErrorHandler? onError;
 
-  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig,
-      {this.debug = false}) {
+  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig, {this.debug = false}) {
     _channel = MethodChannel('arsession_$id');
     _channel.setMethodCallHandler(_platformCallHandler);
   }
+
+  // 🎯 Ensure this helper exists to trigger native tracking safely
+  void startCenterHitTracking() => _channel.invokeMethod('startCenterHitTracking');
 
   Future<Map<String, double>?> getImageIntrinsics() async {
     try {
@@ -111,21 +113,14 @@ class ARSessionManager {
     }
   }
 
-  Future<void> startCenterHitTracking() async {
-    try {
-      await _channel.invokeMethod('startCenterHitTracking');
-    } catch (e) {
-      debugPrint("🚨 Failed to start Center Hit Tracking: $e");
-    }
-  }
-
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
         case 'onPlaneDetected':
         case 'onPlaneUpdated':
+          // FIX 1: Pass '1' to satisfy the original plugin type (int)
           if (onPlaneDetected != null) onPlaneDetected!(1);
-          // 🎯 Pass the detailed Map to the implementation class
+          // FIX 2: Pass the ACTUAL data (Map) to our new high-precision handler
           if (onPlaneUpdate != null) {
             onPlaneUpdate!(Map<String, dynamic>.from(call.arguments));
           }
@@ -143,11 +138,11 @@ class ARSessionManager {
           }
           break;
         case 'dispose':
-          // Standard cleanup
+          // Cleanup handled by engine
           break;
       }
     } catch (e) {
-      debugPrint("🚨 Plugin Handler Error: $e");
+      debugPrint("🚨 Manager Error: $e");
     }
     return Future.value();
   }
