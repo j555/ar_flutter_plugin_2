@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart';
 
+typedef ARUnifiedHandler = void Function(Map<String, dynamic> data);
 typedef ARHitResultHandler = void Function(List<ARHitTestResult> hits);
 typedef ARPlaneResultHandler = void Function(int planeCount);
 typedef ARPlaneUpdateHandler = void Function(Map<String, dynamic> data); // 🎯 ADD THIS
@@ -22,6 +23,7 @@ class ARSessionManager {
   final PlaneDetectionConfig planeDetectionConfig;
   final int id;
   late ARHitResultHandler onPlaneOrPointTap;
+  ARUnifiedHandler? onUnifiedUpdate;
   ARPlaneResultHandler? onPlaneDetected;
   ARPlaneUpdateHandler? onPlaneUpdate; // 🎯 ADD THIS
   ARCenterHitHandler? onCenterHitResult;
@@ -116,6 +118,11 @@ class ARSessionManager {
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
+        case 'onUnifiedUpdate': // 🎯 Handle the native throttled packet
+          if (onUnifiedUpdate != null) {
+            onUnifiedUpdate!(Map<String, dynamic>.from(call.arguments));
+          }
+          break;
         case 'onPlaneDetected':
         case 'onPlaneUpdated':
           // FIX 1: Pass '1' to satisfy the original plugin type (int)
