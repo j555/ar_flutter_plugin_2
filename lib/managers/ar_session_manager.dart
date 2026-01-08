@@ -11,6 +11,7 @@ import 'package:vector_math/vector_math_64.dart';
 
 typedef ARHitResultHandler = void Function(List<ARHitTestResult> hits);
 typedef ARPlaneResultHandler = void Function(int planeCount);
+typedef ARCenterHitHandler = void Function(Map<String, dynamic> data);
 typedef ErrorHandler = void Function(String error);
 
 class ARSessionManager {
@@ -21,16 +22,19 @@ class ARSessionManager {
   final int id;
   late ARHitResultHandler onPlaneOrPointTap;
   ARPlaneResultHandler? onPlaneDetected;
+  ARCenterHitHandler? onCenterHitResult;
   ErrorHandler? onError;
 
-  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig, {this.debug = false}) {
-    _channel = MethodChannel('arsession_$id'); 
+  ARSessionManager(this.id, this.buildContext, this.planeDetectionConfig,
+      {this.debug = false}) {
+    _channel = MethodChannel('arsession_$id');
     _channel.setMethodCallHandler(_platformCallHandler);
   }
 
   Future<Map<String, double>?> getImageIntrinsics() async {
     try {
-      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('getImageIntrinsics');
+      final result = await _channel
+          .invokeMethod<Map<dynamic, dynamic>>('getImageIntrinsics');
       if (result == null) return null;
       return Map<String, double>.from(result);
     } catch (e) {
@@ -40,7 +44,8 @@ class ARSessionManager {
 
   Future<Map<String, dynamic>?> captureBundle() async {
     try {
-      final result = await _channel.invokeMethod<Map<dynamic, dynamic>>('captureBundle');
+      final result =
+          await _channel.invokeMethod<Map<dynamic, dynamic>>('captureBundle');
       return result != null ? Map<String, dynamic>.from(result) : null;
     } catch (e) {
       return null;
@@ -49,9 +54,12 @@ class ARSessionManager {
 
   Future<List<ARHitTestResult>?> hitTest(double x, double y) async {
     try {
-      final List<dynamic>? hitResult = await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
+      final List<dynamic>? hitResult =
+          await _channel.invokeMethod('hitTest', {'x': x, 'y': y});
       if (hitResult == null) return null;
-      return hitResult.map((e) => ARHitTestResult.fromJson(Map<String, dynamic>.from(e))).toList();
+      return hitResult
+          .map((e) => ARHitTestResult.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
     } catch (e) {
       return null;
     }
@@ -59,54 +67,77 @@ class ARSessionManager {
 
   Future<Matrix4?> getCameraPose() async {
     try {
-      final poseList = await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
+      final poseList =
+          await _channel.invokeMethod<List<dynamic>>('getCameraPose', {});
       if (poseList == null) return null;
       return MatrixConverter().fromJson(poseList);
-    } catch (e) { return null; }
+    } catch (e) {
+      return null;
+    }
   }
 
   Future<Matrix4?> getProjectionMatrix() async {
     try {
       // 🎯 FIXED TYPE CAST: Standard List matches the Kotlin .map { it.toDouble() }
-      final serialized = await _channel.invokeMethod<List<dynamic>>('getProjectionMatrix');
+      final serialized =
+          await _channel.invokeMethod<List<dynamic>>('getProjectionMatrix');
       if (serialized == null) return null;
       return MatrixConverter().fromJson(serialized.cast<double>());
-    } catch (e) { 
+    } catch (e) {
       debugPrint("🚨 Error getting Projection Matrix: $e");
-      return null; 
+      return null;
     }
   }
 
   Future<Map<String, dynamic>?> getLightEstimate() async {
     try {
-      final estimate = await _channel.invokeMethod<Map<dynamic, dynamic>>('getLightEstimate');
+      final estimate = await _channel
+          .invokeMethod<Map<dynamic, dynamic>>('getLightEstimate');
       if (estimate != null) return Map<String, dynamic>.from(estimate);
     } catch (e) {}
     return null;
   }
-  
+
   Future<Matrix4?> getPose(ARAnchor anchor) async {
     try {
-      final poseList = await _channel.invokeMethod<List<dynamic>>('getAnchorPose', {"anchorId": anchor.name});
+      final poseList = await _channel.invokeMethod<List<dynamic>>(
+          'getAnchorPose', {"anchorId": anchor.name});
       if (poseList == null) return null;
       return MatrixConverter().fromJson(poseList);
-    } catch (e) { return null; }
+    } catch (e) {
+      return null;
+    }
   }
-  
+
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
-        case 'onPlaneDetected': if (onPlaneDetected != null) onPlaneDetected!(1); break;
-        case 'onPlaneOrPointTap': 
-           if (onPlaneOrPointTap != null) {
-              final raw = call.arguments as List<dynamic>;
-              final results = raw.map((e) => ARHitTestResult.fromJson(Map<String, dynamic>.from(e))).toList();
-              onPlaneOrPointTap(results);
-           }
-           break;
-        case 'dispose': _channel.invokeMethod<void>("dispose"); break;
+        case 'onPlaneDetected':
+          if (onPlaneDetected != null) onPlaneDetected!(1);
+          break;
+        case 'onCenterHitResult':
+          if (onCenterHitResult != null) {
+            // This payload contains "hit" and "cameraPose" from ArView.kt
+            onCenterHitResult!(Map<String, dynamic>.from(call.arguments));
+          }
+          break;
+        case 'onPlaneOrPointTap':
+          if (onPlaneOrPointTap != null) {
+            final raw = call.arguments as List<dynamic>;
+            final results = raw
+                .map((e) =>
+                    ARHitTestResult.fromJson(Map<String, dynamic>.from(e)))
+                .toList();
+            onPlaneOrPointTap(results);
+          }
+          break;
+        case 'dispose':
+          _channel.invokeMethod<void>("dispose");
+          break;
       }
-    } catch (e) { print(e); }
+    } catch (e) {
+      print(e);
+    }
     return Future.value();
   }
 
@@ -126,7 +157,8 @@ class ARSessionManager {
     _channel.invokeMethod<void>('init', {
       'showAnimatedGuide': showAnimatedGuide,
       'showFeaturePoints': showFeaturePoints,
-      'planeDetectionConfig': planeDetectionConfig ?? this.planeDetectionConfig.index,
+      'planeDetectionConfig':
+          planeDetectionConfig ?? this.planeDetectionConfig.index,
       'showPlanes': showPlanes,
       'customPlaneTexturePath': customPlaneTexturePath,
       'showWorldOrigin': showWorldOrigin,
@@ -137,16 +169,24 @@ class ARSessionManager {
       'lightEstimation': lightEstimationMode,
     });
   }
-  
-  dispose() async { try { await _channel.invokeMethod<void>("dispose"); } catch (e) {} }
+
+  dispose() async {
+    try {
+      await _channel.invokeMethod<void>("dispose");
+    } catch (e) {}
+  }
+
   Future<ImageProvider> snapshot() async {
     final result = await _channel.invokeMethod<Uint8List>('snapshot');
     return MemoryImage(result!);
   }
-  
-  void showPlanes(bool show) => _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
-  void showFeaturePoints(bool show) => _channel.invokeMethod<void>('showFeaturePoints', {"showFeaturePoints": show});
-  void hidePointCloud(bool hide) => _channel.invokeMethod<void>('hidePointCloud', {"hide": hide});
+
+  void showPlanes(bool show) =>
+      _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
+  void showFeaturePoints(bool show) => _channel
+      .invokeMethod<void>('showFeaturePoints', {"showFeaturePoints": show});
+  void hidePointCloud(bool hide) =>
+      _channel.invokeMethod<void>('hidePointCloud', {"hide": hide});
 }
 
 
