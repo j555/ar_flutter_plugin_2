@@ -11,6 +11,7 @@ import 'package:vector_math/vector_math_64.dart';
 
 typedef ARHitResultHandler = void Function(List<ARHitTestResult> hits);
 typedef ARPlaneResultHandler = void Function(int planeCount);
+typedef ARPlaneUpdateHandler = void Function(Map<String, dynamic> data);
 typedef ARCenterHitHandler = void Function(Map<String, dynamic> data);
 typedef ErrorHandler = void Function(String error);
 
@@ -22,6 +23,7 @@ class ARSessionManager {
   final int id;
   late ARHitResultHandler onPlaneOrPointTap;
   ARPlaneResultHandler? onPlaneDetected;
+  ARPlaneUpdateHandler? onPlaneUpdate;
   ARCenterHitHandler? onCenterHitResult;
   ErrorHandler? onError;
 
@@ -114,8 +116,10 @@ class ARSessionManager {
       switch (call.method) {
         case 'onPlaneDetected':
         case 'onPlaneUpdated':
-          if (onPlaneDetected != null) {
-            onPlaneDetected!(call.arguments); 
+          if (onPlaneDetected != null) onPlaneDetected!(1);
+          // 🎯 Pass the detailed Map to the implementation class
+          if (onPlaneUpdate != null) {
+            onPlaneUpdate!(Map<String, dynamic>.from(call.arguments));
           }
           break;
         case 'onCenterHitResult':
@@ -126,19 +130,16 @@ class ARSessionManager {
         case 'onPlaneOrPointTap':
           if (onPlaneOrPointTap != null) {
             final raw = call.arguments as List<dynamic>;
-            final results = raw
-                .map((e) =>
-                    ARHitTestResult.fromJson(Map<String, dynamic>.from(e)))
-                .toList();
+            final results = raw.map((e) => ARHitTestResult.fromJson(Map<String, dynamic>.from(e))).toList();
             onPlaneOrPointTap(results);
           }
           break;
         case 'dispose':
-          _channel.invokeMethod<void>("dispose");
+          // Standard cleanup
           break;
       }
     } catch (e) {
-      print(e);
+      debugPrint("🚨 Plugin Handler Error: $e");
     }
     return Future.value();
   }
