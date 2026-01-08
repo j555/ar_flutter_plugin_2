@@ -184,6 +184,8 @@ class ARSessionManager {
     return MemoryImage(result!);
   }
 
+  void startCenterHitTracking() => 
+      _channel.invokeMethod('startCenterHitTracking');
   void showPlanes(bool show) =>
       _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
   void showFeaturePoints(bool show) => _channel
