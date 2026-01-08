@@ -111,6 +111,14 @@ class ARSessionManager {
     }
   }
 
+  Future<void> startCenterHitTracking() async {
+    try {
+      await _channel.invokeMethod('startCenterHitTracking');
+    } catch (e) {
+      debugPrint("🚨 Failed to start Center Hit Tracking: $e");
+    }
+  }
+
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
@@ -184,8 +192,6 @@ class ARSessionManager {
     return MemoryImage(result!);
   }
 
-  void startCenterHitTracking() => 
-      _channel.invokeMethod('startCenterHitTracking');
   void showPlanes(bool show) =>
       _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
   void showFeaturePoints(bool show) => _channel
