@@ -113,11 +113,13 @@ class ARSessionManager {
     try {
       switch (call.method) {
         case 'onPlaneDetected':
-          if (onPlaneDetected != null) onPlaneDetected!(1);
+        case 'onPlaneUpdated':
+          if (onPlaneDetected != null) {
+            onPlaneDetected!(call.arguments); 
+          }
           break;
         case 'onCenterHitResult':
           if (onCenterHitResult != null) {
-            // This payload contains "hit" and "cameraPose" from ArView.kt
             onCenterHitResult!(Map<String, dynamic>.from(call.arguments));
           }
           break;
