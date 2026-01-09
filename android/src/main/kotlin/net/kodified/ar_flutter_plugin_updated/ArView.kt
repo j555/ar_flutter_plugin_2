@@ -541,6 +541,14 @@ class ArView(
         result.success(null)
     }
 
+    private fun handleGetLightEstimate(result: MethodChannel.Result) {
+        latestLightEstimate?.let { le ->
+            if (le.state == LightEstimate.State.VALID) {
+                result.success(mapOf("pixelIntensity" to le.pixelIntensity.toDouble()))
+            } else result.error("INVALID", "Light estimate invalid", null)
+        } ?: result.error("NULL", "No light estimate available", null)
+    }
+
     private fun handleDisableCamera(result: MethodChannel.Result) {
         isSessionPaused = true
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
@@ -551,6 +559,19 @@ class ArView(
         isSessionPaused = false
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         result.success(null)
+    }
+
+    private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
+        val x = call.argument<Double>("x")?.toFloat() ?: (sceneView.width / 2f)
+        val y = call.argument<Double>("y")?.toFloat() ?: (sceneView.height / 2f)
+        val frame = currentArFrame
+        if (frame != null) {
+            val hits = frame.hitTest(x, y)
+            val serializedHits = hits.map { serializeHitResult(it) }
+            result.success(serializedHits)
+        } else {
+            result.error("NO_FRAME", "No frame available for hit test", null)
+        }
     }
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
