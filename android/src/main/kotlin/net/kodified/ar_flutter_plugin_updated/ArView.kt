@@ -47,9 +47,7 @@ import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import java.util.ArrayList
 import java.util.concurrent.ConcurrentLinkedQueue
-import kotlin.math.sqrt
-import kotlin.math.acos
-import kotlin.math.PI
+import kotlin.math.*
 
 class ArView(
     context: Context,
@@ -102,9 +100,7 @@ class ArView(
 
     override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
         if (isDestroyed) return
-        if (event != Lifecycle.Event.ON_DESTROY) {
-            lifecycleRegistry.handleLifecycleEvent(event)
-        }
+        if (event != Lifecycle.Event.ON_DESTROY) lifecycleRegistry.handleLifecycleEvent(event)
     }
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
@@ -128,30 +124,6 @@ class ArView(
             "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
             "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
             "captureBundle" -> handleCaptureBundle(result)
-            else -> result.notImplemented()
-        }
-    }
-
-    private val onObjectMethodCall = MethodChannel.MethodCallHandler { call, result ->
-        if (isDestroyed) return@MethodCallHandler
-        when (call.method) {
-            "addNode" -> (call.arguments as? Map<String, Any>)?.let { handleAddNode(it, result) } ?: result.error("ERR", "Missing data", null)
-            "addNodeToPlaneAnchor" -> handleAddNodeToPlaneAnchor(call, result)
-            "addNodeToScreenPosition" -> handleAddNodeToScreenPosition(call, result)
-            "removeNode" -> handleRemoveNode(call, result)
-            "transformationChanged" -> handleTransformNode(call, result)
-            else -> result.notImplemented()
-        }
-    }
-
-    private val onAnchorMethodCall = MethodChannel.MethodCallHandler { call, result ->
-        if (isDestroyed) return@MethodCallHandler
-        when (call.method) {
-            "addAnchor" -> handleAddAnchor(call, result)
-            "removeAnchor" -> handleRemoveAnchor(call.argument<String>("name"), result)
-            "initGoogleCloudAnchorMode" -> handleInitGoogleCloudAnchorMode(result)
-            "uploadAnchor" -> handleUploadAnchor(call, result)
-            "downloadAnchor" -> handleDownloadAnchor(call, result)
             else -> result.notImplemented()
         }
     }
@@ -192,6 +164,7 @@ class ArView(
                     if (now - lastFrameTime >= throttleInterval) {
                         lastFrameTime = now
                         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+                        
                         val planeHit = hits.firstOrNull { it.trackable is Plane }
                         val pointHit = if (planeHit == null) hits.firstOrNull { it.trackable is com.google.ar.core.Point } else null
                         val hit = planeHit ?: pointHit
@@ -208,20 +181,22 @@ class ArView(
                             packet["hit"] = serializeHitResult(hit)
                             packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
                             
-                            // 🎯 NATIVE PRECISION MATH (Calculated at source)
                             val hp = hit.hitPose
                             val dx = hp.tx() - camPose.tx()
                             val dy = hp.ty() - camPose.ty()
                             val dz = hp.tz() - camPose.tz()
                             packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
 
-                            // Calculate normal from hitPose rotation
-                            val normal = FloatArray(3)
-                            val q = floatArrayOf(hp.qx(), hp.qy(), hp.qz(), hp.qw())
-                            normal[0] = 2 * (q[0] * q[2] + q[3] * q[1])
-                            normal[1] = 2 * (q[1] * q[2] - q[3] * q[0])
-                            normal[2] = 1 - 2 * (q[0] * q[0] + q[1] * q[1])
-                            packet["normal"] = normal.map { it.toDouble() }
+                            // 🎯 FIXED WALL ANGLE MATH
+                            val qx = hp.qx(); val qy = hp.qy(); val qz = hp.qz(); val qw = hp.qw()
+                            val nx = 2 * (qx * qz + qw * qy)
+                            val ny = 2 * (qy * qz - qw * qx)
+                            val nz = 1 - 2 * (qx * qx + qy * qy)
+                            
+                            // Wall Tilt (Degrees from vertical)
+                            // A perfectly vertical wall has ny = 0
+                            val tilt = atan2(sqrt(nx * nx + nz * nz), abs(ny)) * (180.0 / PI)
+                            packet["wallTilt"] = 90.0 - tilt // 0 = Vertical, 90 = Floor
 
                             if (hit.trackable is Plane) packet["surfaceType"] = (hit.trackable as Plane).type.name
                         } else { packet["hitType"] = "NONE" }
@@ -251,8 +226,8 @@ class ArView(
     }
 
     private fun updatePlanes(frame: Frame) {
-        val updatedPlanes: Collection<Plane> = frame.getUpdatedTrackables(Plane::class.java)
-        for (plane in updatedPlanes) {
+        val updatedTrackables: Collection<Plane> = frame.getUpdatedTrackables(Plane::class.java)
+        for (plane in updatedTrackables) {
             if (plane.trackingState == TrackingState.TRACKING) {
                 val planeMap = serializePlane(plane)
                 if (!detectedPlanes.contains(plane)) {
@@ -261,14 +236,16 @@ class ArView(
                         rootLayout.findViewWithTag<View>("hand_motion_layout")?.let { rootLayout.removeView(it) }
                         if(!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                     }
-                } else { activity.runOnUiThread { if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap) } }
+                } else {
+                    activity.runOnUiThread { if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap) }
+                }
             }
         }
     }
 
     private fun updatePointCloud(frame: Frame) {
-        // 🎯 PIXEL 7 STABILITY: Only update point cloud every 3 frames to reduce CPU load
-        if (System.currentTimeMillis() % 3 != 0L) return
+        // 🎯 FIX: Throttle the point cloud update to prevent buffer stalls on Pixel 7
+        if (System.currentTimeMillis() % 2L != 0L) return
 
         val pointCloud = frame.acquirePointCloud()
         try {
@@ -294,9 +271,18 @@ class ArView(
                 }
             }
         } finally { 
-            // 🎯 MANDATORY RELEASE
+            // 🎯 CRITICAL FIX: MANDATORY RELEASE
             pointCloud.release() 
         }
+    }
+
+    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) {
+        anchorNodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            it.anchor?.detach()
+            anchorNodesMap.remove(name)
+            result.success(null) 
+        } ?: result.error("ERR", "Anchor not found", null)
     }
 
     private fun processPendingHits(frame: Frame) {
@@ -308,7 +294,7 @@ class ArView(
                 val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
                 sceneView.addChildNode(anchorNode)
                 mainScope.launch { buildModelNode(req.nodeData)?.let { node -> anchorNode.addChildNode(node); req.result.success(true) } ?: req.result.success(false) }
-            } else req.result.error("ERR", "No hit", null)
+            } else req.result.error("ERR", "No hit found", null)
         }
     }
 
@@ -350,7 +336,7 @@ class ArView(
                             val camera = frame.camera; val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f); val view = FloatArray(16); camera.getViewMatrix(view, 0)
                             var depthData: ByteArray? = null
                             try { 
-                                // Ensure Depth image is auto-closed
+                                // Auto-close resource with .use
                                 frame.acquireDepthImage16Bits().use { img -> 
                                     val buffer = img.planes[0].buffer
                                     depthData = ByteArray(buffer.remaining())
@@ -365,14 +351,6 @@ class ArView(
                 }, Handler(Looper.getMainLooper()))
             }, 100) 
         }
-    }
-
-    private fun handleSnapshot(result: MethodChannel.Result) {
-        if (isDestroyed || sceneView.width <= 0) return result.error("ERR", "View invalid", null)
-        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(sceneView, bitmap, { res ->
-            if (res == PixelCopy.SUCCESS) { mainScope.launch(Dispatchers.IO) { val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream); withContext(Dispatchers.Main) { result.success(stream.toByteArray()) } } } else result.error("ERR", "Failed", null)
-        }, Handler(Looper.getMainLooper()))
     }
 
     private suspend fun buildModelNode(nodeData: Map<String, Any>): ModelNode? {
@@ -403,9 +381,8 @@ class ArView(
     private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) { val name = call.argument<String>("name"); nodesMap[name]?.let { sceneView.removeChildNode(it); nodesMap.remove(name); result.success(name) } ?: result.error("ERR", "Not found", null) }
     private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) { val name = call.argument<String>("name"); val transform = call.argument<ArrayList<Double>>("transformation"); nodesMap[name]?.apply { transform(Mat4.of(*transform!!.map { it.toFloat() }.toFloatArray())); result.success(null) } ?: result.error("ERR", "Not found", null) }
     private fun handleAddAnchor(call: MethodCall, result: MethodChannel.Result) { val t = call.argument<ArrayList<Double>>("transformation") ?: return result.success(false); val name = call.argument<String>("name") ?: "anchor"; val (p, r) = deserializeMatrix4(t); val pose = Pose(floatArrayOf(p.x, p.y, p.z), floatArrayOf(r.x, r.y, r.z, r.w)); sceneView.session?.createAnchor(pose)?.let { val node = AnchorNode(sceneView.engine, it); sceneView.addChildNode(node); anchorNodesMap[name] = node; result.success(true) } ?: result.success(false) }
-    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) { anchorNodesMap[name]?.let { sceneView.removeChildNode(it); it.anchor?.detach(); anchorNodesMap.remove(name); result.success(null) } ?: result.error("ERR", "Not found", null) }
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) { sceneView.session?.let { s -> s.configure(s.config.apply { cloudAnchorMode = Config.CloudAnchorMode.ENABLED }); result.success(null) } ?: result.error("ERR", "No session", null) }
-    private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) { val name = call.argument<String>("name"); val node = anchorNodesMap[name]; if (node != null && sceneView.session != null) { val cloud = CloudAnchorNode(sceneView.engine, node.anchor!!); cloud.host(session = sceneView.session!!) { id, state -> if (state == Anchor.CloudAnchorState.SUCCESS) result.success(id) else result.error("ERR", state.name, null) }; sceneView.addChildNode(cloud) } else result.error("ERR", "Missing session", null) }
+    private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) { val name = call.argument<String>("name"); val node = anchorNodesMap[name]; if (node != null && sceneView.session != null) { val cloud = CloudAnchorNode(sceneView.engine, node.anchor!!); cloud.host(sceneView.session!!) { id, state -> if (state == Anchor.CloudAnchorState.SUCCESS) result.success(id) else result.error("ERR", state.name, null) }; sceneView.addChildNode(cloud) } else result.error("ERR", "Missing session", null) }
     private fun handleDownloadAnchor(call: MethodCall, result: MethodChannel.Result) { val id = call.argument<String>("cloudanchorid") ?: return result.error("ERR", "No ID", null); CloudAnchorNode.resolve(sceneView.engine, sceneView.session!!, id) { state, node -> if (!state.isError && node != null) { sceneView.addChildNode(node); result.success(true) } else result.error("ERR", state.name, null) } }
 
     private fun getPointCloudModelInstance(): ModelInstance? { if (pointCloudModelInstances.isEmpty()) { pointCloudModelInstances = sceneView.modelLoader.createInstancedModel(assetFileLocation = "models/point_cloud.glb", count = maxPoints).toMutableList() }; return pointCloudModelInstances.removeLastOrNull() }
@@ -419,7 +396,6 @@ class ArView(
         mainScope.launch {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
-            // CRITICAL: Stop session context before context loss
             sceneView.session?.pause()
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
             sessionChannel.setMethodCallHandler(null)
