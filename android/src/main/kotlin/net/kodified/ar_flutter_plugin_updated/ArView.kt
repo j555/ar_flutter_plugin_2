@@ -284,6 +284,31 @@ class ArView(
         sceneView.session?.let { s -> s.configure(s.config.apply { cloudAnchorMode = Config.CloudAnchorMode.ENABLED }); result.success(null) }
     }
 
+    private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
+        val name = call.argument<String>("name")
+        val session = sceneView.session
+        val anchorNode = anchorNodesMap[name]
+        if (session != null && anchorNode != null) {
+            val cloud = CloudAnchorNode(sceneView.engine, anchorNode.anchor!!)
+            cloud.host(session) { id, state ->
+                if (state == Anchor.CloudAnchorState.SUCCESS) result.success(id)
+                else result.error("UPLOAD_FAIL", state.name, null)
+            }
+            sceneView.addChildNode(cloud)
+        } else result.error("UPLOAD_FAIL", "Missing session/anchor", null)
+    }
+
+    private fun handleDownloadAnchor(call: MethodCall, result: MethodChannel.Result) {
+        val id = call.argument<String>("cloudanchorid") ?: return result.error("ERR", "No ID", null)
+        val session = sceneView.session ?: return result.error("ERR", "No session", null)
+        CloudAnchorNode.resolve(sceneView.engine, session, id) { state, node ->
+            if (!state.isError && node != null) { 
+                sceneView.addChildNode(node)
+                result.success(true) 
+            } else result.error("RESOLVE_FAIL", state.name, null)
+        }
+    }
+
     private fun handleGetCameraPose(result: MethodChannel.Result) { val p = FloatArray(16); currentArFrame?.camera?.displayOrientedPose?.toMatrix(p, 0); result.success(p.map { it.toDouble() }) }
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) { val p = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(p, 0, 0.01f, 100f); result.success(p.map { it.toDouble() }) }
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) { currentArFrame?.camera?.imageIntrinsics?.let { i -> result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) } }
