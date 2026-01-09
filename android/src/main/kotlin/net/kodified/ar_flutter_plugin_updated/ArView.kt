@@ -119,7 +119,8 @@ class ArView(
 
     // Performance tracking
     private var lastFrameTime: Long = 0
-
+    private val throttleInterval = 33L
+    
     // --- LifecycleOwner Implementation ---
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
