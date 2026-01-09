@@ -284,6 +284,15 @@ class ArView(
         } ?: result.success(false)
     }
 
+    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) {
+        anchorNodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            it.anchor?.detach()
+            anchorNodesMap.remove(name)
+            result.success(null) 
+        } ?: result.error("ANCHOR_NOT_FOUND", "Anchor missing", null)
+    }
+
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         sceneView.session?.let { s -> s.configure(s.config.apply { cloudAnchorMode = Config.CloudAnchorMode.ENABLED }); result.success(null) }
     }
