@@ -246,11 +246,11 @@ class ArView(
 
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = { session, frame ->
-            currentArFrame = frame
-
             if (isSessionPaused || isDestroyed || isCapturingBundle) {
+                currentArFrame = null
                 // Return unit
             } else {
+                currentArFrame = frame
                 val camera = frame.camera
                 val now = System.currentTimeMillis()
 
@@ -575,56 +575,64 @@ class ArView(
     }
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
-        mainScope.launch(Dispatchers.Main) {
-            val frame = currentArFrame ?: return@launch result.error("NO_FRAME", "No frame", null)
-            isCapturingBundle = true
-            val wasPlaneVisible = sceneView.planeRenderer.isVisible
-            sceneView.planeRenderer.isVisible = false
+        val frame = currentArFrame ?: return result.error("NO_FRAME", "No frame", null)
 
-            val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (isDestroyed) return@postDelayed
-                PixelCopy.request(sceneView, bitmap, { copyResult ->
-                    isCapturingBundle = false
-                    sceneView.planeRenderer.isVisible = wasPlaneVisible
-                    if (copyResult == PixelCopy.SUCCESS) {
-                        mainScope.launch(Dispatchers.IO) {
-                            val byteStream = java.io.ByteArrayOutputStream()
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
-                            
-                            val camera = frame.camera
-                            val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
-                            val view = FloatArray(16); camera.getViewMatrix(view, 0)
-                            
-                            var depthData: ByteArray? = null
-                            try {
-                                frame.acquireDepthImage16Bits().use { depthImage ->
-                                    val buffer = depthImage.planes[0].buffer
-                                    depthData = ByteArray(buffer.remaining())
-                                    buffer.get(depthData!!)
-                                }
-                            } catch (e: Exception) {}
+        // 1. Capture AR data synchronously while frame is valid
+        val camera = frame.camera
+        val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
+        val view = FloatArray(16); camera.getViewMatrix(view, 0)
+        val intrinsics = camera.imageIntrinsics
+        val intrinsicsMap = mapOf(
+            "fx" to intrinsics.focalLength[0].toDouble(),
+            "fy" to intrinsics.focalLength[1].toDouble(),
+            "cx" to intrinsics.principalPoint[0].toDouble(),
+            "cy" to intrinsics.principalPoint[1].toDouble(),
+            "width" to intrinsics.imageDimensions[0].toDouble(),
+            "height" to intrinsics.imageDimensions[1].toDouble()
+        )
 
-                            val data = mutableMapOf<String, Any>(
-                                "image" to byteStream.toByteArray(),
-                                "projectionMatrix" to proj.map { it.toDouble() },
-                                "viewMatrix" to view.map { it.toDouble() },
-                                "intrinsics" to mapOf(
-                                    "fx" to camera.imageIntrinsics.focalLength[0].toDouble(),
-                                    "fy" to camera.imageIntrinsics.focalLength[1].toDouble(),
-                                    "cx" to camera.imageIntrinsics.principalPoint[0].toDouble(),
-                                    "cy" to camera.imageIntrinsics.principalPoint[1].toDouble(),
-                                    "width" to camera.imageIntrinsics.imageDimensions[0].toDouble(),
-                                    "height" to camera.imageIntrinsics.imageDimensions[1].toDouble()
-                                )
-                            )
-                            depthData?.let { data["depthMap"] = it }
-                            withContext(Dispatchers.Main) { result.success(data) }
-                        }
-                    } else result.error("CAPTURE_FAILED", "PixelCopy failed", null)
-                }, Handler(Looper.getMainLooper()))
-            }, 100) 
-        }
+        // 2. Capture Depth synchronously if available
+        var depthData: ByteArray? = null
+        try {
+            frame.acquireDepthImage16Bits().use { depthImage ->
+                val buffer = depthImage.planes[0].buffer
+                depthData = ByteArray(buffer.remaining())
+                buffer.get(depthData!!)
+            }
+        } catch (e: Exception) { /* Depth not available */ }
+
+        // 3. Trigger Async Screenshot
+        isCapturingBundle = true
+        val wasPlaneVisible = sceneView.planeRenderer.isVisible
+        sceneView.planeRenderer.isVisible = false
+
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        
+        PixelCopy.request(sceneView, bitmap, { copyResult ->
+            isCapturingBundle = false
+            // Restore state on UI thread
+            Handler(Looper.getMainLooper()).post {
+                if (!isDestroyed) sceneView.planeRenderer.isVisible = wasPlaneVisible
+            }
+
+            if (copyResult == PixelCopy.SUCCESS) {
+                mainScope.launch(Dispatchers.IO) {
+                    val byteStream = java.io.ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
+
+                    val data = mutableMapOf<String, Any>(
+                        "image" to byteStream.toByteArray(),
+                        "projectionMatrix" to proj.map { it.toDouble() },
+                        "viewMatrix" to view.map { it.toDouble() },
+                        "intrinsics" to intrinsicsMap
+                    )
+                    depthData?.let { data["depthMap"] = it }
+                    withContext(Dispatchers.Main) { result.success(data) }
+                }
+            } else {
+                result.error("CAPTURE_FAILED", "PixelCopy failed", null)
+            }
+        }, Handler(Looper.getMainLooper()))
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
@@ -851,9 +859,13 @@ class ArView(
         isDestroyed = true
         Log.i(TAG, "dispose")
         try {
-            activityLifecycle.removeObserver(this@ArView)
+            // 1. Stop processing frames immediately
             sceneView.onSessionUpdated = null
+            currentArFrame = null
+            
+            activityLifecycle.removeObserver(this@ArView)
             lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+            
             sessionChannel.setMethodCallHandler(null)
             objectChannel.setMethodCallHandler(null)
             anchorChannel.setMethodCallHandler(null)
