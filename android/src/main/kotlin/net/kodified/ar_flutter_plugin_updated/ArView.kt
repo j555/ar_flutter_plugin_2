@@ -379,13 +379,11 @@ class ArView(
 
                         // 4. Environmental HDR (Lighting directions)
                         frame.lightEstimate?.let { le ->
-                            if (le.state == LightEstimate.State.VALID) {
-                                try {
-                                    // FIX: Corrected method access
-                                    val sh = le.environmentalHdrSphericalHarmonics
-                                    packet["sphericalHarmonics"] = sh.map { it.toDouble() }
-                                } catch (e: Exception) {}
-                            }
+                            val sh = FloatArray(27)
+                            try {
+                                le.getEnvironmentalHdrSphericalHarmonics(sh)
+                                packet["sphericalHarmonics"] = sh.map { it.toDouble() }
+                            } catch (e: Exception) {}
                         }
 
                         // 5. Tracking Metadata
