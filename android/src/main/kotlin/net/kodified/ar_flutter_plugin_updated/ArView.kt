@@ -211,17 +211,14 @@ class ArView(
                             val dz = hp.tz() - camPose.tz()
                             packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
 
-                            // Calculate normal from hitPose orientation
+                            // Calculate Wall Angle Natively
                             val normal = hp.yAxis
-                            packet["normal"] = normal.map { it.toDouble() }
-                            
                             val tilt = acos(kotlin.math.abs(normal[1]).toDouble()) * (180.0 / kotlin.math.PI)
                             packet["wallTilt"] = 90.0 - tilt
 
                             if (hit.trackable is Plane) packet["surfaceType"] = (hit.trackable as Plane).type.name
                         } else { packet["hitType"] = "NONE" }
 
-                        packet["trackingState"] = camera.trackingState.name
                         activity.runOnUiThread { if (!isDestroyed) sessionChannel.invokeMethod("onUnifiedUpdate", packet) }
                     }
                 }
@@ -248,7 +245,10 @@ class ArView(
                 val planeMap = serializePlane(plane)
                 if (!detectedPlanes.contains(plane)) {
                     detectedPlanes.add(plane)
-                    activity.runOnUiThread { if (!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap) }
+                    activity.runOnUiThread { 
+                        rootLayout.findViewWithTag<View>("hand_motion_layout")?.let { rootLayout.removeView(it) }
+                        if (!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap)
+                    }
                 } else {
                     activity.runOnUiThread { if (!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap) }
                 }
@@ -257,7 +257,7 @@ class ArView(
     }
 
     private fun updatePointCloud(frame: Frame) {
-        if (System.currentTimeMillis() % 2L != 0L) return
+        if (System.currentTimeMillis() % 3L != 0L) return
         val pointCloud = frame.acquirePointCloud()
         try {
             if (pointCloud.timestamp != lastPointCloudTimestamp) {
@@ -273,15 +273,19 @@ class ArView(
                     if (pointCloudNodes.size >= maxPoints || points[i * 4 + 3] < minConfidence) continue
                     val id = ids[i]
                     val existing = pointCloudNodes.firstOrNull { it.id == id }
-                    if (existing != null) { existing.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]) }
-                    else {
+                    if (existing != null) { 
+                        existing.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]) 
+                    } else {
                         var node = pointCloudNodePool.removeLastOrNull()
                         if (node == null) { getPointCloudModelInstance()?.let { node = PointCloudNode(it, id, points[i*4+3]) } } else { node?.id = id }
                         node?.let { it.isVisible = showPointCloud; it.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]); pointCloudNodes.add(it); sceneView.addChildNode(it) }
                     }
                 }
             }
-        } finally { pointCloud.release() }
+        } finally { 
+            // 🎯 MANDATORY RELEASE
+            pointCloud.release() 
+        }
     }
 
     private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) {
@@ -294,11 +298,10 @@ class ArView(
             it.anchor?.detach()
             anchorNodesMap.remove(name)
             result.success(null) 
-        } ?: result.error("ERR", "Anchor missing", null)
+        } ?: result.error("ERR", "Anchor not found", null)
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
-        if (isDestroyed || sceneView.width <= 0) return result.error("ERR", "Invalid view", null)
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(sceneView, bitmap, { res ->
             if (res == PixelCopy.SUCCESS) {
@@ -423,17 +426,6 @@ class ArView(
         pendingHitTests.add(PendingHitTest(pos["x"]!!.toFloat(), pos["y"]!!.toFloat(), nodeData, result))
     }
 
-    private fun handleAddAnchor(call: MethodCall, result: MethodChannel.Result) {
-        val t = call.argument<ArrayList<Double>>("transformation") ?: return result.success(false)
-        val (p, r) = deserializeMatrix4(t)
-        val pose = Pose(floatArrayOf(p.x, p.y, p.z), floatArrayOf(r.x, r.y, r.z, r.w))
-        sceneView.session?.createAnchor(pose)?.let {
-            val node = AnchorNode(sceneView.engine, it)
-            sceneView.addChildNode(node); anchorNodesMap[call.argument<String>("name") ?: "anchor"] = node
-            result.success(true)
-        } ?: result.success(false)
-    }
-
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         sceneView.session?.let { s -> s.configure(s.config.apply { cloudAnchorMode = Config.CloudAnchorMode.ENABLED }); result.success(null) } ?: result.error("ERR", "No session", null)
     }
@@ -461,7 +453,6 @@ class ArView(
     private fun makeWorldOriginNode(context: Context): Node {
         val loader = MaterialLoader(sceneView.engine, context)
         val root = Node(sceneView.engine)
-        // Public API fix for CylinderNode
         val cylinder = CylinderNode(sceneView.engine, radius = 0.005f, height = 0.1f, materialInstance = loader.createColorInstance(io.github.sceneview.math.Color(1f, 0f, 0f, 1f)))
         root.addChildNode(cylinder); return root
     }
@@ -478,7 +469,7 @@ class ArView(
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
             sceneView.session?.pause()
-            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.State.ON_DESTROY)
             sessionChannel.setMethodCallHandler(null)
             objectChannel.setMethodCallHandler(null)
             anchorChannel.setMethodCallHandler(null)
