@@ -135,6 +135,44 @@ class ArView(
         }
     }
 
+    private val onObjectMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        if (isDestroyed) {
+            result.error("DESTROYED", "View is destroyed", null)
+            return@MethodCallHandler
+        }
+        when (call.method) {
+            "addNode" -> {
+                val nodeData = call.arguments as? Map<String, Any>
+                nodeData?.let { handleAddNode(it, result) }
+                    ?: result.error("INVALID_ARGUMENTS", "Node data is required", null)
+            }
+            "addNodeToPlaneAnchor" -> handleAddNodeToPlaneAnchor(call, result)
+            "addNodeToScreenPosition" -> handleAddNodeToScreenPosition(call, result)
+            "removeNode" -> handleRemoveNode(call, result)
+            "transformationChanged" -> handleTransformNode(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+    private val onAnchorMethodCall = MethodChannel.MethodCallHandler { call, result ->
+        if (isDestroyed) {
+            result.error("DESTROYED", "View is destroyed", null)
+            return@MethodCallHandler
+        }
+        when (call.method) {
+            "addAnchor" -> handleAddAnchor(call, result)
+            "removeAnchor" -> {
+                val anchorName = call.argument<String>("name")
+                handleRemoveAnchor(anchorName, result)
+            }
+            "initGoogleCloudAnchorMode" -> handleInitGoogleCloudAnchorMode(result)
+            "uploadAnchor" -> handleUploadAnchor(call, result)
+            "downloadAnchor" -> handleDownloadAnchor(call, result)
+            else -> result.notImplemented()
+        }
+    }
+
+
     init {
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
