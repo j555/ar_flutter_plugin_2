@@ -25,8 +25,11 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
+import io.github.sceneview.ar.scene.PlaneRenderer
+import io.github.sceneview.collision.HitResult as CollisionHitResult
 import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
 import io.github.sceneview.loaders.MaterialLoader
@@ -35,6 +38,7 @@ import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
 import dev.romainguy.kotlin.math.*
+import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
@@ -184,14 +188,10 @@ class ArView(
                 val camera = frame.camera
                 val now = System.currentTimeMillis()
 
-                // 🎯 THE UNIFIED HUB: FIXING DISTANCE & ANGLES
                 if (isCenterHitTrackingEnabled && camera.trackingState == TrackingState.TRACKING) {
                     if (now - lastFrameTime >= throttleInterval) {
                         lastFrameTime = now
-                        val centerX = sceneView.width / 2f
-                        val centerY = sceneView.height / 2f
-                        val hits = frame.hitTest(centerX, centerY)
-                        
+                        val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
                         val planeHit = hits.firstOrNull { it.trackable is Plane }
                         val pointHit = if (planeHit == null) hits.firstOrNull { it.trackable is com.google.ar.core.Point } else null
                         val hit = planeHit ?: pointHit
@@ -208,14 +208,14 @@ class ArView(
                             packet["hit"] = serializeHitResult(hit)
                             packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
                             
-                            // 🎯 NATIVE PRECISION DISTANCE (Calculated on hardware frame)
+                            // 🎯 NATIVE PRECISION MATH (Calculated at the frame source)
                             val hp = hit.hitPose
                             val dx = hp.tx() - camPose.tx()
                             val dy = hp.ty() - camPose.ty()
                             val dz = hp.tz() - camPose.tz()
                             packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
 
-                            // 🎯 NATIVE NORMAL VECTOR (Calculated for Wall Angle)
+                            // Extract Normal vector from the hit pose orientation
                             val normal = FloatArray(3)
                             val qx = hp.qx(); val qy = hp.qy(); val qz = hp.qz(); val qw = hp.qw()
                             normal[0] = 2 * (qx * qz + qw * qy)
@@ -229,7 +229,7 @@ class ArView(
                         frame.lightEstimate?.let { le ->
                             if (le.state == LightEstimate.State.VALID) {
                                 try {
-                                    val sh = le.environmentalHdrAmbientSphericalHarmonics // 🎯 DOC FIX
+                                    val sh = le.environmentalHdrAmbientSphericalHarmonics
                                     packet["sphericalHarmonics"] = sh.map { it.toDouble() }
                                 } catch (e: Exception) {}
                             }
@@ -249,11 +249,11 @@ class ArView(
             }
         }
 
-        sceneView.onTouchEvent = { _, collisionHitResult ->
-            val arHit = collisionHitResult as? HitResult
+        sceneView.onTouchEvent = { _, res ->
+            val arHit = res as? HitResult
             if (arHit != null && !isDestroyed) {
-                val serializedHit = serializeHitResult(arHit)
-                activity.runOnUiThread { if (!isDestroyed) sessionChannel.invokeMethod("onPlaneOrPointTap", listOf(serializedHit)) }
+                val map = serializeHitResult(arHit)
+                activity.runOnUiThread { sessionChannel.invokeMethod("onPlaneOrPointTap", listOf(map)) }
                 true
             } else false
         }
@@ -270,25 +270,25 @@ class ArView(
                         rootLayout.findViewWithTag<View>("hand_motion_layout")?.let { rootLayout.removeView(it) }
                         if(!isDestroyed) sessionChannel.invokeMethod("onPlaneDetected", planeMap)
                     }
-                } else {
-                    activity.runOnUiThread { if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap) }
-                }
+                } else { activity.runOnUiThread { if(!isDestroyed) sessionChannel.invokeMethod("onPlaneUpdated", planeMap) } }
             }
         }
     }
 
     private fun updatePointCloud(frame: Frame) {
-        // 🎯 CRITICAL FIX: The buffer is acquired here
+        // 🎯 CRITICAL FIX: Buffer throttling
+        if (System.currentTimeMillis() % 2 != 0L) return 
+        
         val pointCloud = frame.acquirePointCloud()
         try {
             if (pointCloud.timestamp != lastPointCloudTimestamp) {
                 lastPointCloudTimestamp = pointCloud.timestamp
                 val ids = pointCloud.ids; val points = pointCloud.points; val count = ids.limit()
                 val currentIdSet = HashSet<Int>(); for(i in 0 until count) currentIdSet.add(ids[i])
-                val iterator = pointCloudNodes.iterator()
-                while (iterator.hasNext()) {
-                    val node = iterator.next()
-                    if (!currentIdSet.contains(node.id)) { sceneView.removeChildNode(node); pointCloudNodePool.add(node); iterator.remove() }
+                val itCloud = pointCloudNodes.iterator()
+                while (itCloud.hasNext()) {
+                    val node = itCloud.next()
+                    if (!currentIdSet.contains(node.id)) { sceneView.removeChildNode(node); pointCloudNodePool.add(node); itCloud.remove() }
                 }
                 for (i in 0 until count) {
                     if (pointCloudNodes.size >= maxPoints || points[i * 4 + 3] < minConfidence) continue
@@ -303,7 +303,7 @@ class ArView(
                 }
             }
         } finally { 
-            // 🎯 CRITICAL FIX: MANDATORY RELEASE
+            // 🎯 MANDATORY RELEASE FOR PIXEL 7
             pointCloud.release() 
         }
     }
@@ -317,7 +317,7 @@ class ArView(
                 val anchorNode = AnchorNode(sceneView.engine, hitResult.createAnchor())
                 sceneView.addChildNode(anchorNode)
                 mainScope.launch { buildModelNode(req.nodeData)?.let { node -> anchorNode.addChildNode(node); req.result.success(true) } ?: req.result.success(false) }
-            } else req.result.error("ERR", "No surface found", null)
+            } else req.result.error("ERR", "No hit", null)
         }
     }
 
@@ -358,14 +358,21 @@ class ArView(
                             val byteStream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, byteStream)
                             val camera = frame.camera; val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f); val view = FloatArray(16); camera.getViewMatrix(view, 0)
                             var depthData: ByteArray? = null
-                            try { frame.acquireDepthImage16Bits().use { img -> val buffer = img.planes[0].buffer; depthData = ByteArray(buffer.remaining()); buffer.get(depthData!!) } } catch (e: Exception) {}
+                            try { 
+                                // 🎯 USE BLOCK ENSURES AUTO-CLOSE
+                                frame.acquireDepthImage16Bits().use { img -> 
+                                    val buffer = img.planes[0].buffer
+                                    depthData = ByteArray(buffer.remaining())
+                                    buffer.get(depthData!!) 
+                                } 
+                            } catch (e: Exception) {}
                             val data = mutableMapOf<String, Any>("image" to byteStream.toByteArray(), "projectionMatrix" to proj.map { it.toDouble() }, "viewMatrix" to view.map { it.toDouble() }, "intrinsics" to mapOf("fx" to camera.imageIntrinsics.focalLength[0].toDouble(), "fy" to camera.imageIntrinsics.focalLength[1].toDouble(), "cx" to camera.imageIntrinsics.principalPoint[0].toDouble(), "cy" to camera.imageIntrinsics.principalPoint[1].toDouble(), "width" to camera.imageIntrinsics.imageDimensions[0].toDouble(), "height" to camera.imageIntrinsics.imageDimensions[1].toDouble()))
                             depthData?.let { data["depthMap"] = it }
                             withContext(Dispatchers.Main) { result.success(data) }
                         }
                     } else result.error("ERR", "Copy failed", null)
                 }, Handler(Looper.getMainLooper()))
-            }, 150) // 🎯 INCREASED WAIT FOR GPU BUFFER
+            }, 100) 
         }
     }
 
@@ -421,7 +428,7 @@ class ArView(
         mainScope.launch {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
-            // CRITICAL: Stop the session to prevent EGL_BAD_ACCESS errors
+            // CRITICAL: Stop the session to prevent background GL access crashes
             sceneView.session?.pause()
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
             sessionChannel.setMethodCallHandler(null)
