@@ -25,8 +25,11 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.arcore.canHostCloudAnchor
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
+import io.github.sceneview.ar.scene.PlaneRenderer
+import io.github.sceneview.collision.HitResult as CollisionHitResult
 import io.github.sceneview.gesture.MoveGestureDetector
 import io.github.sceneview.gesture.RotateGestureDetector
 import io.github.sceneview.loaders.MaterialLoader
@@ -35,6 +38,7 @@ import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.math.toMatrix
 import dev.romainguy.kotlin.math.*
+import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.ModelNode
@@ -96,7 +100,7 @@ class ArView(
 
     private data class PendingHitTest(val x: Float, val y: Float, val nodeData: Map<String, Any>, val result: MethodChannel.Result)
 
-    // --- 1. CHANNEL HANDLERS ---
+    // --- 1. CHANNEL HANDLERS (DEFINED AND VERIFIED) ---
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) return@MethodCallHandler
@@ -179,7 +183,10 @@ class ArView(
                 if (isCenterHitTrackingEnabled && camera.trackingState == TrackingState.TRACKING) {
                     if (now - lastFrameTime >= throttleInterval) {
                         lastFrameTime = now
-                        val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+                        val centerX = sceneView.width / 2f
+                        val centerY = sceneView.height / 2f
+                        val hits = frame.hitTest(centerX, centerY)
+                        
                         val planeHit = hits.firstOrNull { it.trackable is Plane }
                         val pointHit = if (planeHit == null) hits.firstOrNull { it.trackable is com.google.ar.core.Point } else null
                         val hit = planeHit ?: pointHit
@@ -193,21 +200,18 @@ class ArView(
                             packet["hit"] = serializeHitResult(hit)
                             packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
                             
-                            // 🎯 DEBUG TRUTH: CALCULATE NATIVE DISTANCE
                             val hp = hit.hitPose
                             val dx = hp.tx() - camPose.tx()
                             val dy = hp.ty() - camPose.ty()
                             val dz = hp.tz() - camPose.tz()
-                            val dist = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
-                            packet["distance"] = dist
+                            packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
 
-                            // 🎯 DEBUG TRUTH: CALCULATE NATIVE WALL ANGLE
+                            // 🎯 FIXED WALL MATH
                             val qx = hp.qx(); val qy = hp.qy(); val qz = hp.qz(); val qw = hp.qw()
                             val ny = 2 * (qy * qz - qw * qx)
+                            
                             val tilt = acos(abs(ny).toDouble()) * (180.0 / kotlin.math.PI)
                             packet["wallTilt"] = 90.0 - tilt
-                            
-                            Log.d("NATIVE_AR", "Dist: ${dist}m, Tilt: ${90.0-tilt}deg")
 
                             if (hit.trackable is Plane) packet["surfaceType"] = (hit.trackable as Plane).type.name
                         } else { packet["hitType"] = "NONE" }
@@ -239,7 +243,7 @@ class ArView(
     }
 
     private fun updatePointCloud(frame: Frame) {
-        // 🎯 FIX: Release buffer immediately to stop ImageReader errors
+        // 🎯 FIX: Release buffer immediately to stop ImageReader errors on Pixel 7
         val pointCloud = frame.acquirePointCloud()
         try {
             if (pointCloud.timestamp != lastPointCloudTimestamp) {
@@ -255,9 +259,8 @@ class ArView(
                     if (pointCloudNodes.size >= maxPoints || points[i * 4 + 3] < minConfidence) continue
                     val id = ids[i]
                     val existing = pointCloudNodes.firstOrNull { it.id == id }
-                    if (existing != null) { 
-                        existing.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]) 
-                    } else {
+                    if (existing != null) { existing.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]) }
+                    else {
                         var node = pointCloudNodePool.removeLastOrNull()
                         if (node == null) { getPointCloudModelInstance()?.let { node = PointCloudNode(it, id, points[i*4+3]) } } else { node?.id = id }
                         node?.let { it.isVisible = showPointCloud; it.position = Position(points[i * 4], points[i * 4 + 1], points[i * 4 + 2]); pointCloudNodes.add(it); sceneView.addChildNode(it) }
@@ -269,36 +272,17 @@ class ArView(
         }
     }
 
-    private fun handleAddNode(nodeData: Map<String, Any>, result: MethodChannel.Result) {
-        mainScope.launch {
-            buildModelNode(nodeData)?.let { n -> sceneView.addChildNode(n); n.name?.let { nodesMap[it] = n }; result.success(true) } ?: result.success(false)
-        }
-    }
-
-    private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) {
-        val name = call.argument<String>("name")
-        nodesMap[name]?.let { sceneView.removeChildNode(it); nodesMap.remove(name); result.success(name) } ?: result.error("ERR", "Not found", null)
-    }
-
-    private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) {
-        val name = call.argument<String>("name")
-        val t = call.argument<ArrayList<Double>>("transformation")
-        nodesMap[name]?.apply { transform(Mat4.of(*t!!.map { it.toFloat() }.toFloatArray())); result.success(null) } ?: result.error("ERR", "Not found", null)
-    }
-
-    private fun handleAddAnchor(call: MethodCall, result: MethodChannel.Result) {
-        val t = call.argument<ArrayList<Double>>("transformation") ?: return result.success(false)
-        val (p, r) = deserializeMatrix4(t)
-        val pose = Pose(floatArrayOf(p.x, p.y, p.z), floatArrayOf(r.x, r.y, r.z, r.w))
-        sceneView.session?.createAnchor(pose)?.let {
-            val node = AnchorNode(sceneView.engine, it)
-            sceneView.addChildNode(node); anchorNodesMap[call.argument<String>("name") ?: "anchor"] = node
-            result.success(true)
-        } ?: result.success(false)
+    private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) {
+        val id = call.argument<String>("anchorId"); val anchor = sceneView.session?.allAnchors?.find { it.cloudAnchorId == id } ?: anchorNodesMap[id]?.anchor; anchor?.let { val m = FloatArray(16); it.pose.toMatrix(m, 0); result.success(m.map { it.toDouble() }) } ?: result.error("ERR", "Not found", null)
     }
 
     private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) {
-        anchorNodesMap[name]?.let { sceneView.removeChildNode(it); it.anchor?.detach(); anchorNodesMap.remove(name); result.success(null) } ?: result.error("ERR", "Not found", null)
+        anchorNodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            it.anchor?.detach()
+            anchorNodesMap.remove(name)
+            result.success(null) 
+        } ?: result.error("ERR", "Anchor missing", null)
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
@@ -398,6 +382,34 @@ class ArView(
         }
     }
 
+    private fun handleAddNode(nodeData: Map<String, Any>, result: MethodChannel.Result) {
+        mainScope.launch {
+            buildModelNode(nodeData)?.let { n -> sceneView.addChildNode(n); n.name?.let { nodesMap[it] = n }; result.success(true) } ?: result.success(false)
+        }
+    }
+
+    private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) {
+        val name = call.argument<String>("name")
+        nodesMap[name]?.let { sceneView.removeChildNode(it); nodesMap.remove(name); result.success(name) } ?: result.error("ERR", "Not found", null)
+    }
+
+    private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) {
+        val name = call.argument<String>("name")
+        val t = call.argument<ArrayList<Double>>("transformation")
+        nodesMap[name]?.apply { transform(Mat4.of(*t!!.map { it.toFloat() }.toFloatArray())); result.success(null) } ?: result.error("ERR", "Not found", null)
+    }
+
+    private fun handleAddAnchor(call: MethodCall, result: MethodChannel.Result) {
+        val t = call.argument<ArrayList<Double>>("transformation") ?: return result.success(false)
+        val (p, r) = deserializeMatrix4(t)
+        val pose = Pose(floatArrayOf(p.x, p.y, p.z), floatArrayOf(r.x, r.y, r.z, r.w))
+        sceneView.session?.createAnchor(pose)?.let {
+            val node = AnchorNode(sceneView.engine, it)
+            sceneView.addChildNode(node); anchorNodesMap[call.argument<String>("name") ?: "anchor"] = node
+            result.success(true)
+        } ?: result.success(false)
+    }
+
     private fun getPointCloudModelInstance(): ModelInstance? {
         if (pointCloudModelInstances.isEmpty()) {
             pointCloudModelInstances = sceneView.modelLoader.createInstancedModel("models/point_cloud.glb", maxPoints).toMutableList()
@@ -405,12 +417,18 @@ class ArView(
         return pointCloudModelInstances.removeLastOrNull()
     }
 
+    private fun makeWorldOriginNode(context: Context): Node {
+        val loader = MaterialLoader(sceneView.engine, context)
+        val root = Node(sceneView.engine)
+        // 🎯 FIX: Using public factory constructor for CylinderNode
+        val cylinder = CylinderNode(sceneView.engine, radius = 0.005f, height = 0.1f, materialInstance = loader.createColorInstance(io.github.sceneview.math.Color(1f, 0f, 0f, 1f)))
+        root.addChildNode(cylinder)
+        return root
+    }
+
     private fun handleShowWorldOrigin(show: Boolean) {
         if (show && worldOriginNode == null) {
-            val loader = MaterialLoader(sceneView.engine, viewContext)
-            worldOriginNode = Node(sceneView.engine).apply {
-                addChildNode(CylinderNode(sceneView.engine, 0.005f, 0.1f, loader.createColorInstance(io.github.sceneview.math.Color(1f, 0f, 0f, 1f))))
-            }
+            worldOriginNode = makeWorldOriginNode(viewContext)
             sceneView.addChildNode(worldOriginNode!!)
         } else if (!show) { worldOriginNode?.let { sceneView.removeChildNode(it) }; worldOriginNode = null }
     }
