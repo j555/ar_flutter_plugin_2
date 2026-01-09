@@ -118,7 +118,7 @@ class ArView(
     private var frameCounter = 0
     private var latestLightEstimate: LightEstimate? = null
 
-    // 🎯 NEW: Performance tracking
+    // 🎯 Bridge Performance Tuning
     private var lastFrameTime: Long = 0
     private val throttleInterval = 33L // ~30fps bridge limit
 
@@ -280,12 +280,12 @@ class ArView(
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     
-                    // Enable Depth API for Occlusion and Precision
+                    // 🎯 ENABLE DEPTH NATIVELY
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
                     
-                    // Enable Environmental HDR for perfect Lighting directionality
+                    // Enable Environmental HDR for perfecta Lighting directionality
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
                     
                     focusMode = Config.FocusMode.AUTO
@@ -364,7 +364,7 @@ class ArView(
                     if (hit != null) {
                         val packet = mutableMapOf<String, Any>()
                         
-                        // 1. Sync Camera Pose
+                        // 1. Sync Camera Pose (Display Oriented)
                         val camArr = FloatArray(16)
                         camera.getDisplayOrientedPose().toMatrix(camArr, 0)
                         packet["cameraPose"] = camArr.map { it.toDouble() }
@@ -379,29 +379,39 @@ class ArView(
 
                         // 4. Environmental HDR (Lighting directions)
                         frame.lightEstimate?.let { le ->
-                            val sh = FloatArray(27)
-                            try {
-                                le.getEnvironmentalHdrSphericalHarmonics(sh)
-                                packet["sphericalHarmonics"] = sh.map { it.toDouble() }
-                            } catch (e: Exception) {}
+                            if (le.state == LightEstimate.State.VALID) {
+                                try {
+                                    // FIX: Corrected method access
+                                    val sh = le.environmentalHdrSphericalHarmonics
+                                    packet["sphericalHarmonics"] = sh.map { it.toDouble() }
+                                } catch (e: Exception) {}
+                            }
                         }
 
-                        // 5. Tracking Failure Reasons
+                        // 5. Tracking Metadata
                         packet["trackingState"] = camera.trackingState.name
-                        packet["trackingFailureReason"] = camera.trackingFailureReason.name
+                        packet["failureReason"] = camera.trackingFailureReason.name
 
-                        // 6. Surface Labeling
+                        // 6. Semantic Labeling
                         if (hit.trackable is Plane) {
                             packet["surfaceType"] = (hit.trackable as Plane).type.name
                         }
 
-                        // 7. Thermal Health
-                        val powerManager = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+                        // 7. Thermal & Hardware Health
+                        val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
                         packet["thermalStatus"] = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            powerManager.currentThermalStatus 
+                            pm.currentThermalStatus 
                         } else { -1 }
 
-                        // 8. Thread-Safe Dispatch to Flutter
+                        // 8. Augmented Image Tracking
+                        val updatedImages = frame.getUpdatedTrackables(AugmentedImage::class.java)
+                        if (updatedImages.isNotEmpty()) {
+                            packet["recognizedImages"] = updatedImages.map { img ->
+                                mapOf("name" to img.name, "state" to img.trackingState.name)
+                            }
+                        }
+
+                        // 9. Thread-Safe Dispatch to Flutter
                         activity.runOnUiThread {
                             if (!isDestroyed) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
                         }
@@ -409,7 +419,7 @@ class ArView(
                 }
             }
 
-            // --- 0. PROCESS PENDING HIT TESTS (Original Logic) ---
+            // --- Original Logic: Process Pending Hit Tests ---
             while (!pendingHitTests.isEmpty()) {
                 val request = pendingHitTests.poll() ?: break
                 if (isDestroyed) break
@@ -433,14 +443,14 @@ class ArView(
                             } ?: request.result.success(false)
                         }
                     } else {
-                        request.result.error("HIT_TEST_FAILED", "No hit found", null)
+                        request.result.error("HIT_TEST_FAILED", "No surface found", null)
                     }
                 } catch (e: Exception) {
                     request.result.error("HIT_TEST_ERROR", e.message, null)
                 }
             }
 
-            // --- 1. PLANE UPDATES (Original Logic) ---
+            // --- Original Logic: Plane Updates ---
             val updatedTrackables = frame.getUpdatedTrackables(Plane::class.java)
             for (plane in updatedTrackables) {
                 if (plane.trackingState == TrackingState.TRACKING) {
@@ -457,7 +467,7 @@ class ArView(
                 }
             }
 
-            // --- 2. POINT CLOUD POOLING (Original logic restored) ---
+            // --- Original Logic: Point Cloud pooling ---
             val pointCloud = frame.acquirePointCloud()
             try {
                 if (pointCloud.timestamp != lastPointCloudTimestamp) {
@@ -488,7 +498,6 @@ class ArView(
                         val existing = pointCloudNodes.firstOrNull { it.id == id }
                         if (existing != null) {
                             existing.position = Position(points[pIdx], points[pIdx+1], points[pIdx+2])
-                            existing.isVisible = showPointCloud 
                         } else {
                             var node = pointCloudNodePool.removeLastOrNull()
                             if (node == null) {
@@ -624,9 +633,6 @@ class ArView(
     }
 
     private fun handleShowFeaturePoints(call: MethodCall, result: MethodChannel.Result) {
-        val show = call.argument<Boolean>("show") ?: false
-        showPointCloud = show
-        pointCloudNodes.forEach { it.isVisible = show }
         result.success(null)
     }
 
@@ -664,7 +670,7 @@ class ArView(
                             val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
                             val view = FloatArray(16); camera.getViewMatrix(view, 0)
                             
-                            // acquisition of raw depth map for precision measurements
+                            // 🎯 FUTURE PROOF: ADD 16-BIT DEPTH MAP TO SNAPSHOT BUNDLE
                             var depthData: ByteArray? = null
                             try {
                                 frame.acquireDepthImage16Bits().use { depthImage ->
@@ -674,7 +680,7 @@ class ArView(
                                 }
                             } catch (e: Exception) {}
 
-                            val payload = mutableMapOf<String, Any>(
+                            val data = mutableMapOf<String, Any>(
                                 "image" to byteStream.toByteArray(),
                                 "projectionMatrix" to proj.map { it.toDouble() },
                                 "viewMatrix" to view.map { it.toDouble() },
@@ -687,8 +693,8 @@ class ArView(
                                     "height" to camera.imageIntrinsics.imageDimensions[1].toDouble()
                                 )
                             )
-                            depthData?.let { payload["depthMap"] = it }
-                            withContext(Dispatchers.Main) { result.success(payload) }
+                            depthData?.let { data["depthMap"] = it }
+                            withContext(Dispatchers.Main) { result.success(data) }
                         }
                     } else result.error("CAPTURE_FAILED", "PixelCopy failed", null)
                 }, Handler(Looper.getMainLooper()))
@@ -702,9 +708,8 @@ class ArView(
         PixelCopy.request(sceneView, bitmap, { res ->
             if (res == PixelCopy.SUCCESS) {
                 mainScope.launch(Dispatchers.IO) {
-                    val stream = java.io.ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                    val s = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, s)
+                    withContext(Dispatchers.Main) { result.success(s.toByteArray()) }
                 }
             } else result.error("SNAP_FAIL", "Failed", null)
         }, Handler(Looper.getMainLooper()))
@@ -719,17 +724,17 @@ class ArView(
         val transform = nodeData["transformation"] as? ArrayList<Double> ?: return null
         return try {
             sceneView.modelLoader.loadModelInstance(uri)?.let { instance ->
-                // 🎯 FULL GESTURE OVERRIDES RESTORED
+                // 🎯 GESTURE OVERRIDES RESTORED
                 object : ModelNode(instance) {
-                    override fun onMoveBegin(detector: MoveGestureDetector, e: MotionEvent): Boolean {
+                    override fun onMoveBegin(det: MoveGestureDetector, e: MotionEvent): Boolean {
                         if (handlePans) objectChannel.invokeMethod("onPanStart", name)
-                        return handlePans && super.onMoveBegin(detector, e)
+                        return handlePans && super.onMoveBegin(det, e)
                     }
                     override fun onMove(detector: MoveGestureDetector, e: MotionEvent): Boolean {
                         if (handlePans) {
-                            val res = super.onMove(detector, e)
+                            val r = super.onMove(detector, e)
                             objectChannel.invokeMethod("onPanChange", name)
-                            return res
+                            return r
                         }
                         return false
                     }
@@ -739,21 +744,21 @@ class ArView(
                             objectChannel.invokeMethod("onPanEnd", mapOf("name" to name, "transform" to worldTransform.toMatrix().data.map { it.toDouble() }))
                         }
                     }
-                    override fun onRotateBegin(detector: RotateGestureDetector, e: MotionEvent): Boolean {
+                    override fun onRotateBegin(det: RotateGestureDetector, e: MotionEvent): Boolean {
                         if (handleRotation) objectChannel.invokeMethod("onRotationStart", name)
-                        return handleRotation && super.onRotateBegin(detector, e)
+                        return handleRotation && super.onRotateBegin(det, e)
                     }
                     override fun onRotate(detector: RotateGestureDetector, e: MotionEvent): Boolean {
                         if (handleRotation) {
-                            val res = super.onRotate(detector, e)
+                            val r = super.onRotate(detector, e)
                             objectChannel.invokeMethod("onRotationChange", name)
-                            return res
+                            return r
                         }
                         return false
                     }
-                    override fun onRotateEnd(detector: RotateGestureDetector, e: MotionEvent) {
+                    override fun onRotateEnd(det: RotateGestureDetector, e: MotionEvent) {
                         if (handleRotation) {
-                            super.onRotateEnd(detector, e)
+                            super.onRotateEnd(det, e)
                             objectChannel.invokeMethod("onRotationEnd", mapOf("name" to name, "transform" to worldTransform.toMatrix().data.map { it.toDouble() }))
                         }
                     }
@@ -832,10 +837,12 @@ class ArView(
     }
 
     private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
-        val node = anchorNodesMap[call.argument<String>("name")]
-        if (node != null && sceneView.session != null) {
-            val cloud = CloudAnchorNode(sceneView.engine, node.anchor!!)
-            cloud.host(sceneView.session!!) { id, state ->
+        val name = call.argument<String>("name")
+        val session = sceneView.session
+        val anchorNode = anchorNodesMap[name]
+        if (session != null && anchorNode != null) {
+            val cloud = CloudAnchorNode(sceneView.engine, anchorNode.anchor!!)
+            cloud.host(session) { id, state ->
                 if (state == Anchor.CloudAnchorState.SUCCESS) result.success(id) else result.error("ERR", state.name, null)
             }
             sceneView.addChildNode(cloud)
@@ -844,7 +851,8 @@ class ArView(
 
     private fun handleDownloadAnchor(call: MethodCall, result: MethodChannel.Result) {
         val id = call.argument<String>("cloudanchorid") ?: return result.error("ERR", "No ID", null)
-        CloudAnchorNode.resolve(sceneView.engine, sceneView.session!!, id) { state, node ->
+        val session = sceneView.session ?: return result.error("ERR", "No session", null)
+        CloudAnchorNode.resolve(sceneView.engine, session, id) { state, node ->
             if (!state.isError && node != null) { sceneView.addChildNode(node); result.success(true) }
             else result.error("ERR", state.name, null)
         }
@@ -887,3 +895,5 @@ class ArView(
         } catch(e: Exception) { Log.e(TAG, "Dispose error", e) }
     }
 }
+
+            
