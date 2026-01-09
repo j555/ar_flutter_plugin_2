@@ -119,7 +119,6 @@ class ArView(
 
     // Performance tracking
     private var lastFrameTime: Long = 0
-    private val throttleInterval = 33L // ~30fps bridge limit
 
     // --- LifecycleOwner Implementation ---
     override val lifecycle: Lifecycle
@@ -256,7 +255,7 @@ class ArView(
 
                 // 🎯 THE PERFECT UNIFIED TELEMETRY PACKET (Integrated requested features)
                 if (isCenterHitTrackingEnabled && camera.trackingState == TrackingState.TRACKING) {
-                    if (now - lastFrameTime >= throttleInterval) {
+                    if (now - lastFrameTime >= throttleInterval && sceneView.width > 0 && sceneView.height > 0) {
                         lastFrameTime = now
                         
                         val centerX = sceneView.width / 2f
@@ -862,6 +861,7 @@ class ArView(
             // 1. Stop processing frames immediately
             sceneView.onSessionUpdated = null
             currentArFrame = null
+            sceneView.session?.pause()
             
             activityLifecycle.removeObserver(this@ArView)
             lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
