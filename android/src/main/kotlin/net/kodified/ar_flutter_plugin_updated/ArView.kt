@@ -38,10 +38,10 @@ class ArView(
 ) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
     private val TAG: String = "ArView"
-    private var sceneView: ARSceneView
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val rootLayout: ViewGroup = FrameLayout(context)
+    private val sceneView: ARSceneView = ARSceneView(context, null)
 
     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
     private val objectChannel = MethodChannel(messenger, "arobjects_$id")
@@ -56,10 +56,10 @@ class ArView(
 
     private var currentArFrame: Frame? = null
     private var lastFrameTime: Long = 0
-    private val throttleInterval = 33L 
+    private val throttleInterval = 33L // ~30fps telemetry
 
-    // --- HANDLERS MUST BE DEFINED BEFORE INIT BLOCK TO AVOID INITIALIZATION ERRORS ---
-    
+    // --- HANDLERS INITIALIZED AT TOP TO FIX COMPILATION ERRORS ---
+
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) return@MethodCallHandler
         when (call.method) {
@@ -93,7 +93,8 @@ class ArView(
     init {
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
-        sceneView = ARSceneView(context, null).apply {
+        
+        sceneView.apply {
             lifecycle = lifecycleRegistry
             sessionConfiguration = { session, config ->
                 config.apply {
@@ -101,17 +102,19 @@ class ArView(
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) depthMode = Config.DepthMode.AUTOMATIC
+                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                        depthMode = Config.DepthMode.AUTOMATIC
+                    }
                 }
             }
         }
         rootLayout.addView(sceneView)
-        
-        // Correctly assign handlers
+
+        // Set Handlers
         sessionChannel.setMethodCallHandler(onSessionMethodCall)
         objectChannel.setMethodCallHandler(onObjectMethodCall)
         anchorChannel.setMethodCallHandler(onAnchorMethodCall)
-        
+
         setupSceneViewListeners()
     }
 
@@ -121,13 +124,13 @@ class ArView(
                 currentArFrame = frame
                 val now = System.currentTimeMillis()
                 
-                // 1. Unified Hardware Telemetry
+                // Unified Telemetry
                 if (isCenterHitTrackingEnabled && !isBridgeBusy && (now - lastFrameTime >= throttleInterval)) {
                     lastFrameTime = now
                     broadcastFrameUpdate(frame)
                 }
 
-                // 2. Resource Cleanup: Release Point Clouds immediately to prevent buffer errors
+                // 🎯 FIX BUFFER ERRORS: Explicitly release PointCloud immediately
                 try { frame.acquirePointCloud().release() } catch (e: Exception) {}
             }
         }
@@ -144,16 +147,23 @@ class ArView(
         packet["cameraPose"] = camPose.map { it.toDouble() }
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
-        packet["augmentedImages"] = emptyList<Map<String, Any>>() 
+        packet["augmentedImages"] = emptyList<Map<String, Any>>() // Fix Dart Cast Error
 
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         hits.firstOrNull { it.trackable is Plane }?.let { hit ->
             packet["hit"] = serializeHitResult(hit)
             packet["hitType"] = "PLANE"
+            
+            // Precision Math
             val hp = hit.hitPose
             val cp = camera.displayOrientedPose
             packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
-            packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
+            
+            // Wall tilt logic
+            val normal = hp.yAxis 
+            packet["wallTilt"] = 90.0 - (acos(abs(normal[1]).toDouble()) * (180.0 / PI))
+        } ?: run {
+            packet["hitType"] = "NONE"
         }
 
         isBridgeBusy = true
@@ -167,7 +177,7 @@ class ArView(
         val frame = currentArFrame ?: return result.error("NO_FRAME", "Session not ready", null)
         val camera = frame.camera
         
-        // ATOMIC DATA CAPTURE
+        // Atomic capture of matrices
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
         val view = FloatArray(16); camera.getViewMatrix(view, 0)
         val intrinsics = camera.imageIntrinsics
@@ -200,7 +210,6 @@ class ArView(
         nodesMap[name]?.let { node ->
             sceneView.removeChildNode(node)
             nodesMap.remove(name)
-            // Cleanup orphaned anchors using childNodes
             anchorNodesMap.values.find { it.childNodes.contains(node) }?.let { anchorNode ->
                 if (anchorNode.childNodes.isEmpty()) {
                     sceneView.removeChildNode(anchorNode)
@@ -226,6 +235,7 @@ class ArView(
     }
 
     override fun getView(): View = rootLayout
+    
     override fun dispose() {
         if (isDestroyed) return
         isDestroyed = true
@@ -233,8 +243,8 @@ class ArView(
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
-            // CRITICAL: Let LifecycleRegistry trigger the destruction. 
-            // Manual pause/stop during Surface destruction causes the EGL BAD_ACCESS crash.
+            // 🎯 FIX CRASH: We stop the lifecycle first. ARCore's Session and Filament's Engine 
+            // will clean up via SceneView's internal observer safely.
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
             sessionChannel.setMethodCallHandler(null)
             objectChannel.setMethodCallHandler(null)
