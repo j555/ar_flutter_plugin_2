@@ -409,6 +409,15 @@ class ArView(
         mainScope.launch { buildModelNode(nodeData)?.let { n -> sceneView.addChildNode(n); n.name?.let { nodesMap[it] = n }; result.success(true) } ?: result.success(false) }
     }
 
+    private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) {
+        val name = call.argument<String>("name")
+        nodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            nodesMap.remove(name)
+            result.success(name) 
+        } ?: result.error("NODE_NOT_FOUND", "Node not found", null)
+    }
+
     private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) {
         val name = call.argument<String>("name"); val t = call.argument<ArrayList<Double>>("transformation")
         nodesMap[name]?.apply { transform(dev.romainguy.kotlin.math.Mat4.of(*t!!.map { it.toFloat() }.toFloatArray())); result.success(null) } ?: result.error("ERR", "Not found", null)
