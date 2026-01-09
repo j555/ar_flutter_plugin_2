@@ -750,6 +750,19 @@ class ArView(
         }
     }
 
+    private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
+        val x = call.argument<Double>("x")?.toFloat() ?: (sceneView.width / 2f)
+        val y = call.argument<Double>("y")?.toFloat() ?: (sceneView.height / 2f)
+        val frame = currentArFrame
+        if (frame != null) {
+            val hits = frame.hitTest(x, y)
+            val serializedHits = hits.map { serializeHitResult(it) }
+            result.success(serializedHits)
+        } else {
+            result.error("NO_FRAME", "No frame available for hit test", null)
+        }
+    }
+
     private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
         try {
             if (call.hasArgument("showPointCloud")) {
