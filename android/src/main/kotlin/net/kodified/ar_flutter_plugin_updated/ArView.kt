@@ -55,34 +55,11 @@ class ArView(
     @Volatile private var isBridgeBusy = false
 
     private var currentArFrame: Frame? = null
-    private var lastPointCloudTimestamp: Long? = null
     private var lastFrameTime: Long = 0
     private val throttleInterval = 33L 
 
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-
-    init {
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
-        activityLifecycle.addObserver(this)
-        sceneView = ARSceneView(context, null).apply {
-            lifecycle = lifecycleRegistry
-            sessionConfiguration = { session, config ->
-                config.apply {
-                    planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                    updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                    focusMode = Config.FocusMode.AUTO
-                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) depthMode = Config.DepthMode.AUTOMATIC
-                }
-            }
-        }
-        rootLayout.addView(sceneView)
-        sessionChannel.setMethodCallHandler(onSessionMethodCall)
-        objectChannel.setMethodCallHandler(onObjectMethodCall)
-        anchorChannel.setMethodCallHandler(onAnchorMethodCall)
-        setupSceneViewListeners()
-    }
-
+    // --- HANDLERS MUST BE DEFINED BEFORE INIT BLOCK TO AVOID INITIALIZATION ERRORS ---
+    
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) return@MethodCallHandler
         when (call.method) {
@@ -111,16 +88,46 @@ class ArView(
         }
     }
 
+    override val lifecycle: Lifecycle get() = lifecycleRegistry
+
+    init {
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        activityLifecycle.addObserver(this)
+        sceneView = ARSceneView(context, null).apply {
+            lifecycle = lifecycleRegistry
+            sessionConfiguration = { session, config ->
+                config.apply {
+                    planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                    lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                    updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                    focusMode = Config.FocusMode.AUTO
+                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) depthMode = Config.DepthMode.AUTOMATIC
+                }
+            }
+        }
+        rootLayout.addView(sceneView)
+        
+        // Correctly assign handlers
+        sessionChannel.setMethodCallHandler(onSessionMethodCall)
+        objectChannel.setMethodCallHandler(onObjectMethodCall)
+        anchorChannel.setMethodCallHandler(onAnchorMethodCall)
+        
+        setupSceneViewListeners()
+    }
+
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = { _, frame ->
             if (!isDestroyed) {
                 currentArFrame = frame
                 val now = System.currentTimeMillis()
+                
+                // 1. Unified Hardware Telemetry
                 if (isCenterHitTrackingEnabled && !isBridgeBusy && (now - lastFrameTime >= throttleInterval)) {
                     lastFrameTime = now
                     broadcastFrameUpdate(frame)
                 }
-                // Release point cloud to prevent buffer errors
+
+                // 2. Resource Cleanup: Release Point Clouds immediately to prevent buffer errors
                 try { frame.acquirePointCloud().release() } catch (e: Exception) {}
             }
         }
@@ -137,7 +144,7 @@ class ArView(
         packet["cameraPose"] = camPose.map { it.toDouble() }
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
-        packet["augmentedImages"] = emptyList<Map<String, Any>>() // Prevents Dart Cast Error
+        packet["augmentedImages"] = emptyList<Map<String, Any>>() 
 
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         hits.firstOrNull { it.trackable is Plane }?.let { hit ->
@@ -159,10 +166,16 @@ class ArView(
     private fun handleCaptureBundle(result: MethodChannel.Result) {
         val frame = currentArFrame ?: return result.error("NO_FRAME", "Session not ready", null)
         val camera = frame.camera
+        
+        // ATOMIC DATA CAPTURE
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
         val view = FloatArray(16); camera.getViewMatrix(view, 0)
         val intrinsics = camera.imageIntrinsics
-        val intrinsicMap = mapOf("fx" to intrinsics.focalLength[0].toDouble(), "fy" to intrinsics.focalLength[1].toDouble(), "cx" to intrinsics.principalPoint[0].toDouble(), "cy" to intrinsics.principalPoint[1].toDouble(), "width" to intrinsics.imageDimensions[0].toDouble(), "height" to intrinsics.imageDimensions[1].toDouble())
+        val intrinsicMap = mapOf(
+            "fx" to intrinsics.focalLength[0].toDouble(), "fy" to intrinsics.focalLength[1].toDouble(),
+            "cx" to intrinsics.principalPoint[0].toDouble(), "cy" to intrinsics.principalPoint[1].toDouble(),
+            "width" to intrinsics.imageDimensions[0].toDouble(), "height" to intrinsics.imageDimensions[1].toDouble()
+        )
 
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(sceneView, bitmap, { res ->
@@ -170,7 +183,12 @@ class ArView(
                 mainScope.launch(Dispatchers.IO) {
                     val stream = java.io.ByteArrayOutputStream()
                     bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-                    val bundle = mutableMapOf<String, Any>("image" to stream.toByteArray(), "projectionMatrix" to proj.map { it.toDouble() }, "viewMatrix" to view.map { it.toDouble() }, "intrinsics" to intrinsicMap)
+                    val bundle = mutableMapOf<String, Any>(
+                        "image" to stream.toByteArray(),
+                        "projectionMatrix" to proj.map { it.toDouble() },
+                        "viewMatrix" to view.map { it.toDouble() },
+                        "intrinsics" to intrinsicMap
+                    )
                     withContext(Dispatchers.Main) { result.success(bundle) }
                 }
             } else result.error("SNAP_FAIL", "PixelCopy failed", null)
@@ -182,7 +200,7 @@ class ArView(
         nodesMap[name]?.let { node ->
             sceneView.removeChildNode(node)
             nodesMap.remove(name)
-            // Cleanup anchors: uses childNodes as per io.github.sceneview.node
+            // Cleanup orphaned anchors using childNodes
             anchorNodesMap.values.find { it.childNodes.contains(node) }?.let { anchorNode ->
                 if (anchorNode.childNodes.isEmpty()) {
                     sceneView.removeChildNode(anchorNode)
@@ -215,8 +233,12 @@ class ArView(
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
-            // We let the sceneView lifecycle observer handle the pause to prevent EGL BAD_ACCESS
+            // CRITICAL: Let LifecycleRegistry trigger the destruction. 
+            // Manual pause/stop during Surface destruction causes the EGL BAD_ACCESS crash.
             lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+            sessionChannel.setMethodCallHandler(null)
+            objectChannel.setMethodCallHandler(null)
+            anchorChannel.setMethodCallHandler(null)
             rootLayout.removeAllViews()
         }
     }
