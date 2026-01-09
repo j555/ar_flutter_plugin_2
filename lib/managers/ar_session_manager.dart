@@ -184,8 +184,9 @@ class ARSessionManager {
     } catch (e) {}
   }
 
-  Future<Uint8List?> snapshot() async {
-    return await _channel.invokeMethod<Uint8List>('snapshot');
+  Future<ImageProvider> snapshot() async {
+    final result = await _channel.invokeMethod<Uint8List>('snapshot');
+    return MemoryImage(result!);
   }
 
   void showPlanes(bool show) => _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
