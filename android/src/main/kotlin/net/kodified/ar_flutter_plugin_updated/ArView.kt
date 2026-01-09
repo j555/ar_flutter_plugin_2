@@ -421,6 +421,15 @@ class ArView(
         }
     }
 
+    private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) {
+        val name = call.argument<String>("name")
+        nodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            nodesMap.remove(name)
+            result.success(name) 
+        } ?: result.error("NODE_NOT_FOUND", "Node not found", null)
+    }
+
     private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) {
         val name = call.argument<String>("name")
         val t = call.argument<ArrayList<Double>>("transformation")
