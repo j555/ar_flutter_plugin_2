@@ -345,8 +345,7 @@ class ArView(
                         frame.lightEstimate?.let { le ->
                             if (le.state == LightEstimate.State.VALID) {
                                 try {
-                                    // FIXED: Using property syntax for getEnvironmentalHdrSphericalHarmonics
-                                    val sh = le.environmentalHdrSphericalHarmonics
+                                    val sh = le.environmentalHdrAmbientSphericalHarmonics
                                     packet["sphericalHarmonics"] = sh.map { it.toDouble() }
                                 } catch (e: Exception) {}
                             }
