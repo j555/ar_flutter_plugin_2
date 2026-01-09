@@ -92,9 +92,17 @@ class ARSessionManager {
   Future<void> _platformCallHandler(MethodCall call) {
     try {
       switch (call.method) {
-        case 'onUnifiedUpdate': // 🎯 The Throttled 30fps Packet
+        case 'onUnifiedUpdate':
           if (onUnifiedUpdate != null) {
-            onUnifiedUpdate!(Map<String, dynamic>.from(call.arguments));
+            // 🎯 FIX Dart Cast Error: Ensure augmentedImages is never null
+            final Map<String, dynamic> data = Map<String, dynamic>.from(call.arguments);
+            data['augmentedImages'] ??= <dynamic>[];
+            
+            // Native Trace check
+            if (debug && data['distance'] != null) {
+              print("🟢 [DART TELEMETRY] Dist: ${data['distance']}m | Tilt: ${data['wallTilt']}°");
+            }
+            onUnifiedUpdate!(data);
           }
           break;
 
@@ -137,7 +145,7 @@ class ARSessionManager {
           break;
       }
     } catch (e) {
-      debugPrint("🚨 AR Manager Error: $e");
+      debugPrint("🚨 Bridge Logic Error: $e");
     }
     return Future.value();
   }
@@ -176,9 +184,8 @@ class ARSessionManager {
     } catch (e) {}
   }
 
-  Future<ImageProvider> snapshot() async {
-    final result = await _channel.invokeMethod<Uint8List>('snapshot');
-    return MemoryImage(result!);
+  Future<Uint8List?> snapshot() async {
+    return await _channel.invokeMethod<Uint8List>('snapshot');
   }
 
   void showPlanes(bool show) => _channel.invokeMethod<void>('showPlanes', {"showPlanes": show});
