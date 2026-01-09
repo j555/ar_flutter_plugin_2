@@ -245,6 +245,24 @@ class ArView(
         setupSceneViewListeners()
     }
 
+    private fun handleHitTest(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val x = call.argument<Double>("x")?.toFloat() ?: (sceneView.width / 2f)
+            val y = call.argument<Double>("y")?.toFloat() ?: (sceneView.height / 2f)
+            val frame = currentArFrame
+            if (frame != null) {
+                val hits = frame.hitTest(x, y)
+                val serializedHits = hits.map { serializeHitResult(it) }
+                result.success(serializedHits)
+            } else {
+                result.error("NO_FRAME", "No frame available for hit test", null)
+            }
+        } catch (e: Exception) {
+            result.error("HIT_TEST_ERROR", e.message, null)
+        }
+    }
+
+
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = { session, frame ->
             currentArFrame = frame
@@ -785,6 +803,23 @@ class ArView(
                 sceneView.addChildNode(node)
                 result.success(true) 
             } else result.error("RESOLVE_FAIL", state.name, null)
+        }
+    }
+
+    private fun handleShowPointCloud(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            if (call.hasArgument("showPointCloud")) {
+                showPointCloud = call.argument<Boolean>("showPointCloud") ?: true
+            } else if (call.hasArgument("hide")) {
+                showPointCloud = !(call.argument<Boolean>("hide") ?: false)
+            }
+
+            pointCloudNodes.forEach { node ->
+                node.isVisible = showPointCloud
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("POINT_CLOUD_ERROR", e.message, null)
         }
     }
 
