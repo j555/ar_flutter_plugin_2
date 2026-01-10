@@ -35,20 +35,19 @@ class ArView(
     private val rootLayout: ViewGroup = FrameLayout(context)
     private val sceneView: ARSceneView = ARSceneView(context, null)
     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+
+    private var lastLogTime: Long = 0    
     
     private val isDestroyed = AtomicBoolean(false)
     @Volatile private var isCenterHitTrackingEnabled = false
     @Volatile private var isBridgeBusy = false
     @Volatile private var hardwareUnlocked = false
 
-    private var currentArFrame: Frame? = null
-    private var lastFrameTime: Long = 0
-
     override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override fun getView(): View = rootLayout
+    override fun getView(): View = rootLayout // 🎯 FIXED: Member implemented
 
     init {
-        logHardware("BOOT: Universal Handshake Protocol Active")
+        logHardware("BOOT: Universal Perception Stack v2")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
@@ -59,7 +58,8 @@ class ArView(
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    // Initial attempt to enable
+                    
+                    // 🎯 HARDWARE LOCK FIX: Initial config request
                     instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
@@ -76,6 +76,7 @@ class ArView(
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "dispose" -> dispose()
                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
+                "snapshot" -> handleSnapshot(result)
                 else -> result.success(null)
             }
         }
@@ -85,22 +86,21 @@ class ArView(
     private fun setupSceneViewListeners() {
         sceneView.onSessionUpdated = { session, frame ->
             if (!isDestroyed.get()) {
-                currentArFrame = frame
-                
-                // 🎯 THE HANDSHAKE: Force config once tracking starts. 
-                // This fixes "Instant Placement is disabled" from your logs.
+                // 🎯 DRIVER FIX: Force Instant Placement once hardware is warm
                 if (!hardwareUnlocked && frame.camera.trackingState == TrackingState.TRACKING) {
                     val config = session.config
                     config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
                     session.configure(config)
                     hardwareUnlocked = true
-                    logHardware("HARDWARE_SYNC: Instant Placement Unlocked")
+                    logHardware("SYNC: Instant Placement Unlocked")
                 }
 
                 if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 33L)) {
                     lastFrameTime = System.currentTimeMillis()
                     broadcastHardwareTelemetry(frame)
                 }
+                
+                // Clear point cloud to free RAM (Fixes RAM Threshold log)
                 try { frame.acquirePointCloud()?.use { } } catch (e: Exception) { }
             }
         }
@@ -110,27 +110,28 @@ class ArView(
         val camera = frame.camera
         val packet = mutableMapOf<String, Any>()
         
-        // Ensure core matrices exist to prevent Dart Null-Cast crashes
+        // 1. Matricies & State
         val camPose = camera.displayOrientedPose
         packet["cameraPose"] = matrixToArray(camPose)
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
-        packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
 
-        // 🎯 Feature Point Counter for debugging lighting
+        // 2. Feature Density
+        var features = 0
         try {
             frame.acquirePointCloud()?.use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4
+                features = pc.points.remaining() / 4
+                packet["featureCount"] = features
             }
         } catch (e: Exception) { packet["featureCount"] = 0 }
 
-        // 🎯 View-to-Sensor Mapping
+        // 3. Coordinate Normalization
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // Robust HitTest
+        // 4. Hit Testing
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
@@ -142,9 +143,24 @@ class ArView(
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
         } else {
             packet["hitType"] = "NONE"
-            // 🎯 FIX DART CRASH: Never send nulls for numeric values
             packet["distance"] = 0.0
             packet["wallTilt"] = 0.0
+        }
+
+        // 🔍 DEEP DEBUG LOGGING (Throttled to every 2 seconds)
+        val now = System.currentTimeMillis()
+        if (now - lastLogTime > 2000) {
+            lastLogTime = now
+            Log.d(TAG, """
+                📊 [PERCEPTION DEBUG]
+                - Tracking State: ${camera.trackingState}
+                - Features Seen:  $features
+                - View Center:    (${viewCoords[0]}, ${viewCoords[1]})
+                - Normalized:    (${normalizedCoords[0]}, ${normalizedCoords[1]})
+                - Hit Result:     ${packet["hitType"]}
+                - Distance:       ${packet["distance"]}m
+                - Instant Mode:   ${sceneView.session?.config?.instantPlacementMode}
+            """.trimIndent())
         }
 
         isBridgeBusy = true
@@ -179,10 +195,21 @@ class ArView(
         val m = FloatArray(16); pose.toMatrix(m, 0); return m.map { it.toDouble() }
     }
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
-        currentArFrame?.camera?.imageIntrinsics?.let { i -> 
-            result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) 
-        } ?: result.error("ERR", "Not ready", null)
+        val frame = currentArFrame ?: return result.error("ERR", "No frame", null)
+        val i = frame.camera.imageIntrinsics
+        result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble()))
     }
-    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
+    private fun handleSnapshot(result: MethodChannel.Result) {
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(sceneView, bitmap, { res ->
+            if (res == PixelCopy.SUCCESS) {
+                mainScope.launch(Dispatchers.IO) {
+                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                }
+            } else result.error("ERR", "Copy Fail", null)
+        }, Handler(Looper.getMainLooper()))
+    }
     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) { if (!isDestroyed.get()) { if (e == Lifecycle.Event.ON_DESTROY) dispose() else lifecycleRegistry.handleLifecycleEvent(e) } }
+    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
 }
