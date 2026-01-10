@@ -39,14 +39,18 @@ class ArView(
     private val isDestroyed = AtomicBoolean(false)
     @Volatile private var isCenterHitTrackingEnabled = false
     @Volatile private var isBridgeBusy = false
+    @Volatile private var hasForcedConfig = false // 🎯 Hardware Unlock Flag
+
     private var currentArFrame: Frame? = null
     private var lastFrameTime: Long = 0
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
+    
+    // 🎯 FIX: Required member for PlatformView
     override fun getView(): View = rootLayout
 
     init {
-        logHardware("BOOT: Fixed InstantPlacement + Robust Telemetry")
+        logHardware("BOOT: Version 2.3.1 Staged Hardware Sync")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
@@ -58,9 +62,8 @@ class ArView(
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
                     
-                    // 🎯 FIX: Force Instant Placement for "No Hit" fallback
+                    // Requesting sensors...
                     instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
-                    
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
@@ -83,14 +86,25 @@ class ArView(
     }
 
     private fun setupSceneViewListeners() {
-        sceneView.onSessionUpdated = { _, frame ->
+        sceneView.onSessionUpdated = { session, frame ->
             if (!isDestroyed.get()) {
                 currentArFrame = frame
+                
+                // 🎯 Hardware Unlock: Force config application once tracking starts
+                if (!hasForcedConfig && frame.camera.trackingState == TrackingState.TRACKING) {
+                    val config = session.config
+                    config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+                    session.configure(config)
+                    hasForcedConfig = true
+                    logHardware("HARDWARE_UNLOCK: Instant Placement Forced ON")
+                }
+
                 if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 33L)) {
                     lastFrameTime = System.currentTimeMillis()
                     broadcastHardwareTelemetry(frame)
                 }
-                // release point cloud to prevent "RAM Memory Threshold" error
+                
+                // Keep RAM low to avoid the "threshold exceeded" log in your Pixel 7
                 try { frame.acquirePointCloud()?.use { } } catch (e: Exception) { }
             }
         }
@@ -98,8 +112,6 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        if (camera.trackingState != TrackingState.TRACKING) return
-
         val packet = mutableMapOf<String, Any>()
         
         // 1. Matricies & State
@@ -111,31 +123,31 @@ class ArView(
         packet["trackingState"] = camera.trackingState.name
         packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
 
-        // 2. 🎯 NEW FEATURE: Feature Point Density Counter
+        // 2. 🎯 FEATURE DENSITY COUNTER
         try {
             frame.acquirePointCloud()?.use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4 
+                packet["featureCount"] = pc.points.remaining() / 4
             }
         } catch (e: Exception) { packet["featureCount"] = 0 }
 
-        // 3. 🎯 COORDINATE NORMALIZATION: Mapping Screen -> Sensor
+        // 3. 🎯 COORDINATE NORMALIZATION: Mapping Screen (2400px) to Sensor (1920px)
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // 4. 🎯 PERMISSIVE SEARCH: Grid Probing + Instant Placement
+        // 4. 🎯 ROBUST HIT TEST: Instant Placement used as a fallback
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
-        bestHit?.let { hit ->
-            packet["hit"] = serializeHitResult(hit)
-            packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
-            val hp = hit.hitPose
+        if (bestHit != null) {
+            packet["hit"] = serializeHitResult(bestHit)
+            packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
+            val hp = bestHit.hitPose
             packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
-        } ?: run { 
+        } else {
             packet["hitType"] = "NONE"
-            // 🎯 FIX DART CRASH: Provide default numeric values even on failure
+            // 🎯 FIX DART CRASH: Always send numbers, never Nulls
             packet["distance"] = 0.0
             packet["wallTilt"] = 0.0
         }
@@ -152,6 +164,7 @@ class ArView(
         mainScope.cancel()
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
+            sceneView.onSessionUpdated = null
             sessionChannel.setMethodCallHandler(null)
             try {
                 sceneView.session?.let { s ->
@@ -171,19 +184,6 @@ class ArView(
         currentArFrame?.camera?.imageIntrinsics?.let { i ->
             result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble()))
         } ?: result.error("ERR", "Hardware Silent", null)
-    }
-
-    private fun handleSnapshot(result: MethodChannel.Result) {
-        if (isDestroyed.get() || sceneView.width <= 0) return result.error("ERR", "View lost", null)
-        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(sceneView, bitmap, { res ->
-            if (res == PixelCopy.SUCCESS) {
-                mainScope.launch(Dispatchers.IO) {
-                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
-                }
-            } else result.error("ERR", "Refused", null)
-        }, Handler(Looper.getMainLooper()))
     }
     
     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) { if (!isDestroyed.get()) { if (e == Lifecycle.Event.ON_DESTROY) dispose() else lifecycleRegistry.handleLifecycleEvent(e) } }
