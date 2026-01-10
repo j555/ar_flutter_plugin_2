@@ -37,8 +37,8 @@ class ArView(
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val rootLayout: ViewGroup = FrameLayout(context)
     private val sceneView: ARSceneView = ARSceneView(context, null)
-
     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    
     private val isDestroyed = AtomicBoolean(false)
     @Volatile private var isCenterHitTrackingEnabled = false
     @Volatile private var isBridgeBusy = false
@@ -48,35 +48,35 @@ class ArView(
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
+    // 🎯 FIX: Implement the abstract member required by PlatformView
+    override fun getView(): View = rootLayout
+
     init {
-        logHardware("BOOT: Coordinate Normalization + Instant Placement Active")
+        logHardware("BOOT: Version 2.3.1 + Parity Telemetry")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
             lifecycle = lifecycleRegistry
             sessionConfiguration = { session, config ->
-                config.apply {
-                    planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
-                    updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                    focusMode = Config.FocusMode.AUTO
-                    
-                    // 🎯 PERFECTION: Enable Instant Placement for immediate wall tracking
-                    if (session.isInstantPlacementModeSupported(Config.InstantPlacementMode.LOCAL_Y_UP)) {
-                        instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
-                    }
-                    
-                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                        setDepthMode(Config.DepthMode.AUTOMATIC)
-                    }
+                config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                config.focusMode = Config.FocusMode.AUTO
+                
+                // 🎯 FIX: Correct Instant Placement Syntax for ARCore 1.51
+                config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+                
+                if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                    config.depthMode = Config.DepthMode.AUTOMATIC
                 }
             }
         }
         rootLayout.addView(sceneView)
+
         sessionChannel.setMethodCallHandler { call, result ->
             if (isDestroyed.get()) return@setMethodCallHandler
             when (call.method) {
-                "init" -> { sceneView.planeRenderer.isEnabled = true; result.success(null) }
+                "init" -> { result.success(null) }
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "dispose" -> dispose()
@@ -96,6 +96,7 @@ class ArView(
                     lastFrameTime = now
                     broadcastHardwareTelemetry(frame)
                 }
+                try { frame.acquirePointCloud()?.use { } } catch (e: Exception) { }
             }
         }
     }
@@ -104,24 +105,26 @@ class ArView(
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
-        // 🎯 PERFECTION: Normalize Screen Coordinates to ARCore Space
-        // This maps the 2400px height of the Pixel 7 screen to the 1920px camera buffer
-        val viewCoordinates = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
-        val normalizedCoordinates = FloatArray(2)
-        frame.transformCoordinates2d(
-            Coordinates2d.VIEW,
-            viewCoordinates,
-            Coordinates2d.VIEW_NORMALIZED,
-            normalizedCoordinates
-        )
-
         val packet = mutableMapOf<String, Any>()
         packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
         packet["trackingState"] = camera.trackingState.name
+        packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
 
-        // 🎯 SEARCH LOGIC: Plane -> Instant Placement (Local Y Up)
-        // Instant Placement allows the Pixel 7 to "guess" the wall based on floor tracking
-        val hits = frame.hitTestInstantPlacement(normalizedCoordinates[0], normalizedCoordinates[1], 1.0f)
+        // 🎯 NEW FEATURE: Feature Point Density Counter
+        // We acquire the point cloud to count how many "dots" the Pixel 7 sees.
+        try {
+            frame.acquirePointCloud()?.use { pc ->
+                packet["featureCount"] = pc.points.remaining() / 4 
+            }
+        } catch (e: Exception) { packet["featureCount"] = 0 }
+
+        // 🎯 COORDINATE NORMALIZATION: Mapping Screen (2400px) to Sensor (1920px)
+        val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
+        val normalizedCoords = FloatArray(2)
+        frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
+
+        // 🎯 HIT TEST: Use Instant Placement for immediate feedback
+        val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 1.0f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
         bestHit?.let { hit ->
@@ -170,4 +173,5 @@ class ArView(
         } ?: result.error("ERR", "Not ready", null)
     }
     private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
+    override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) { if (!isDestroyed.get()) { if (e == Lifecycle.Event.ON_DESTROY) dispose() else lifecycleRegistry.handleLifecycleEvent(e) } }
 }
