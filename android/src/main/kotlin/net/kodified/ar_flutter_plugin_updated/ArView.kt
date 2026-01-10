@@ -74,44 +74,46 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
+        val session = sceneView.session ?: return
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
-        packet["featureCount"] = 0
-        packet["distance"] = 0.0
-        packet["wallTilt"] = 0.0
-        packet["hitType"] = "NONE"
-
-        // 1. Core Telemetry
-        val cp = camera.displayOrientedPose
-        packet["cameraPose"] = matrixToArray(cp)
+        
+        // Core Poses
+        val cameraPose = camera.displayOrientedPose
+        packet["cameraPose"] = matrixToArray(cameraPose)
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // 2. Dots Count
+        // Dots
         frame.acquirePointCloud()?.use { pc ->
             packet["featureCount"] = pc.points.remaining() / 4
         }
 
-        // 3. Hit Test Logic (PRIORITIZING VERTICAL)
+        // 🎯 IMPROVED HIT TESTING
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        
-        // Find best vertical hit (Normal Y near 0.0)
-        val bestHit = hits.firstOrNull { h -> 
-            val normalY = abs(h.hitPose.yAxis[1])
-            normalY < 0.5 // Priority to Walls
-        } ?: hits.firstOrNull() // Fallback to floor
+        val bestHit = hits.firstOrNull { h -> h.trackable is Plane }
+            ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
+            ?: frame.hitTestInstantPlacement(sceneView.width / 2f, sceneView.height / 2f, 2.0f).firstOrNull()
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
+            packet["hitType"] = if (abs(hp.yAxis[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             
-            val dist = sqrt((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2))
-            packet["distance"] = dist.toDouble()
+            // 🎯 DISTANCE CALC
+            packet["distance"] = sqrt(
+                (hp.tx() - cameraPose.tx()).toDouble().pow(2) + 
+                (hp.ty() - cameraPose.ty()).toDouble().pow(2) + 
+                (hp.tz() - cameraPose.tz()).toDouble().pow(2)
+            )
 
+            // 🎯 THE "40 DEGREE" FIX: Send the surface normal for perspective math
+            packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
+            
+            // Gravity Tilt (is the wall leaning?)
             val normalY = abs(hp.yAxis[1])
-            packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
