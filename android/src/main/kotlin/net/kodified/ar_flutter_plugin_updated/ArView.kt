@@ -143,7 +143,10 @@ class ArView(
 
         // Hit Testing
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
-        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
+        val bestHit = hits.firstOrNull { 
+            val normal = it.hitPose.yAxis
+            abs(normal[1]) < 0.5 
+        } ?: hits.firstOrNull()
 
         if (bestHit != null) {
             packet["hit"] = serializeHitResult(bestHit)
