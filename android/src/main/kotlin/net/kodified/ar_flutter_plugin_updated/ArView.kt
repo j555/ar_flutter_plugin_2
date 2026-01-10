@@ -108,58 +108,59 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-    val camera = frame.camera
-    val packet = mutableMapOf<String, Any>()
-    
-    // 🛡️ INITIALIZE ALL KEYS (Prevents the Dart 'Null' crash)
-    packet["featureCount"] = 0 
-    packet["distance"] = 0.0
-    packet["wallTilt"] = 0.0
-    packet["hitType"] = "NONE"
+        val camera = frame.camera
+        if (camera.trackingState != TrackingState.TRACKING) return
 
-    val camPose = camera.displayOrientedPose
-    packet["cameraPose"] = matrixToArray(camPose)
-    val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
-    packet["projectionMatrix"] = projArr.map { it.toDouble() }
-    packet["trackingState"] = camera.trackingState.name
+        val packet = mutableMapOf<String, Any>()
+        
+        // 🛡️ Pre-populate with defaults to prevent Dart Null-Crashes
+        packet["featureCount"] = 0
+        packet["distance"] = 0.0
+        packet["wallTilt"] = 0.0
+        packet["hitType"] = "NONE"
 
-    // 🎯 Acquire Dots (Feature Points)
-    var dotsSeen = 0
-    try {
-        frame.acquirePointCloud()?.use { pc ->
-            dotsSeen = pc.points.remaining() / 4
-            packet["featureCount"] = dotsSeen
+        val camPose = camera.displayOrientedPose
+        packet["cameraPose"] = matrixToArray(camPose)
+        val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
+        packet["projectionMatrix"] = projArr.map { it.toDouble() }
+        packet["trackingState"] = camera.trackingState.name
+
+        var featuresCount = 0 // 🎯 Variable name fixed
+        try {
+            frame.acquirePointCloud()?.use { pc ->
+                featuresCount = pc.points.remaining() / 4
+                packet["featureCount"] = featuresCount
+            }
+        } catch (e: Exception) { }
+
+        val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
+        val normalizedCoords = FloatArray(2)
+        frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
+
+        val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
+        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
+
+        if (bestHit != null) {
+            packet["hit"] = serializeHitResult(bestHit)
+            packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
+            val hp = bestHit.hitPose
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+            packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
         }
-    } catch (e: Exception) { }
 
-    // Normalize Center
-    val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
-    val normalizedCoords = FloatArray(2)
-    frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
+        // 🔍 Throttled Log (Fixed reference to featuresCount)
+        val now = System.currentTimeMillis()
+        if (now - lastLogTime > 2000) {
+            lastLogTime = now
+            Log.d(TAG, "📊 PERCEPTION: Dots: $featuresCount | Hit: ${packet["hitType"]} | Dist: ${packet["distance"]}m")
+        }
 
-    // Hit Testing
-    val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
-    val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
-
-    if (bestHit != null) {
-        packet["hit"] = serializeHitResult(bestHit)
-        packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
-        val hp = bestHit.hitPose
-        packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
-        packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
+        isBridgeBusy = true
+        activity.runOnUiThread {
+            if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+            isBridgeBusy = false
+        }
     }
-
-    // 🔍 Console Debug (Already shows hardware is working!)
-    val hitType = packet["hitType"] as String
-    val d = packet["distance"] as Double
-    Log.d(TAG, "📊 PERCEPTION: Dots: $dotsSeen | Hit: $hitType | Dist: ${d}m")
-
-    isBridgeBusy = true
-    activity.runOnUiThread {
-        if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
-        isBridgeBusy = false
-    }
-}
 
     override fun dispose() {
         if (isDestroyed.getAndSet(true)) return
