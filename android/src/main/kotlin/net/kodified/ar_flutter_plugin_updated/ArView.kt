@@ -298,6 +298,15 @@ class ArView(
         } ?: result.success(false)
     }
 
+    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) {
+        anchorNodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            it.anchor?.detach()
+            anchorNodesMap.remove(name)
+            result.success(null) 
+        } ?: result.error("ANCHOR_NOT_FOUND", "Anchor missing", null)
+    }
+
     private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) {
         val id = call.argument<String>("anchorId")
         val anchor = sceneView.session?.allAnchors?.find { it.cloudAnchorId == id } ?: anchorNodesMap[id]?.anchor
