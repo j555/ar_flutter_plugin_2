@@ -12,7 +12,6 @@ import com.google.ar.core.*
 import net.kodified.ar_flutter_plugin_updated.Serialization.Deserializers.deserializeMatrix4
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeAnchor
 import net.kodified.ar_flutter_plugin_updated.Serialization.Serialization.serializeHitResult
-import io.flutter.FlutterInjector
 import io.flutter.plugin.common.*
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
@@ -48,11 +47,11 @@ class ArView(
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
-    // 🎯 FIX: Implement the abstract member required by PlatformView
+    // 🎯 FIX: Missing PlatformView member
     override fun getView(): View = rootLayout
 
     init {
-        logHardware("BOOT: Version 2.3.1 + Parity Telemetry")
+        logHardware("BOOT: Version 2.3.1 + Universal Parity Telemetry")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
@@ -63,9 +62,10 @@ class ArView(
                 config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 config.focusMode = Config.FocusMode.AUTO
                 
-                // 🎯 FIX: Correct Instant Placement Syntax for ARCore 1.51
-                config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
-                
+                // 🎯 FIX: Proper Instant Placement & Depth Enablement for Pixel 7
+                if (session.isInstantPlacementModeSupported(Config.InstantPlacementMode.LOCAL_Y_UP)) {
+                    config.instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+                }
                 if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                     config.depthMode = Config.DepthMode.AUTOMATIC
                 }
@@ -76,7 +76,8 @@ class ArView(
         sessionChannel.setMethodCallHandler { call, result ->
             if (isDestroyed.get()) return@setMethodCallHandler
             when (call.method) {
-                "init" -> { result.success(null) }
+                "init" -> result.success(null)
+                "snapshot" -> handleSnapshot(result)
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "dispose" -> dispose()
@@ -91,11 +92,11 @@ class ArView(
         sceneView.onSessionUpdated = { _, frame ->
             if (!isDestroyed.get()) {
                 currentArFrame = frame
-                val now = System.currentTimeMillis()
-                if (isCenterHitTrackingEnabled && !isBridgeBusy && (now - lastFrameTime >= 33L)) {
-                    lastFrameTime = now
+                if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 33L)) {
+                    lastFrameTime = System.currentTimeMillis()
                     broadcastHardwareTelemetry(frame)
                 }
+                // Always release point cloud to prevent memory pressure
                 try { frame.acquirePointCloud()?.use { } } catch (e: Exception) { }
             }
         }
@@ -106,31 +107,42 @@ class ArView(
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
+        
+        // 1. Matrices (MANDATORY: Android and iOS 1:1)
         packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
+        packet["projectionMatrix"] = projArr.map { it.toDouble() }
+        
         packet["trackingState"] = camera.trackingState.name
         packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
 
-        // 🎯 NEW FEATURE: Feature Point Density Counter
-        // We acquire the point cloud to count how many "dots" the Pixel 7 sees.
+        // 2. 🎯 NEW FEATURE: Point Density Counter
         try {
             frame.acquirePointCloud()?.use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4 
+                // Every 4 floats is one point (x,y,z,confidence)
+                packet["featureCount"] = pc.points.remaining() / 4
             }
         } catch (e: Exception) { packet["featureCount"] = 0 }
 
-        // 🎯 COORDINATE NORMALIZATION: Mapping Screen (2400px) to Sensor (1920px)
+        // 3. 🎯 COORDINATE NORMALIZATION: Mapping View to Sensor Center
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // 🎯 HIT TEST: Use Instant Placement for immediate feedback
-        val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 1.0f)
-        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
+        // 4. 🎯 PERMISSIVE HIT TEST (The "Fixed" Logic)
+        // Check for Planes, then Fallback to Instant Placement Points
+        val hits = frame.hitTest(normalizedCoords[0], normalizedCoords[1])
+        var bestHit = hits.firstOrNull { it.trackable is Plane }
+        
+        // If no plane, use Instant Placement (Estimated surface)
+        if (bestHit == null) {
+            val instantHits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
+            bestHit = instantHits.firstOrNull()
+        }
 
         bestHit?.let { hit ->
             packet["hit"] = serializeHitResult(hit)
             packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
-            
             val hp = hit.hitPose
             val cp = camera.displayOrientedPose
             packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
@@ -144,16 +156,31 @@ class ArView(
         }
     }
 
+    private fun handleSnapshot(result: MethodChannel.Result) {
+        if (isDestroyed.get() || sceneView.width <= 0) return result.error("ERR", "View invalid", null)
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(sceneView, bitmap, { res ->
+            if (res == PixelCopy.SUCCESS) {
+                mainScope.launch(Dispatchers.IO) {
+                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                }
+            } else result.error("ERR", "Snapshot Failed", null)
+        }, Handler(Looper.getMainLooper()))
+    }
+
     override fun dispose() {
         if (isDestroyed.getAndSet(true)) return
         mainScope.cancel()
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
+            sceneView.onSessionUpdated = null
             sessionChannel.setMethodCallHandler(null)
             try {
                 sceneView.session?.let { s ->
                     val c = s.config
                     c.depthMode = Config.DepthMode.DISABLED
+                    c.planeFindingMode = Config.PlaneFindingMode.DISABLED
                     c.instantPlacementMode = Config.InstantPlacementMode.DISABLED
                     s.configure(c)
                     s.pause()
@@ -170,8 +197,8 @@ class ArView(
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
         currentArFrame?.camera?.imageIntrinsics?.let { i -> 
             result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) 
-        } ?: result.error("ERR", "Not ready", null)
+        } ?: result.error("ERR", "Hardware silent", null)
     }
-    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) { if (!isDestroyed.get()) { if (e == Lifecycle.Event.ON_DESTROY) dispose() else lifecycleRegistry.handleLifecycleEvent(e) } }
+    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
 }
