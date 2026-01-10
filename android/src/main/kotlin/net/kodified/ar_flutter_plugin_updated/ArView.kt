@@ -1,10 +1,8 @@
-// lib/android/src/main/kotlin/.../ArView.kt
+package net.kodified.ar_flutter_plugin_updated
 
-import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.*
-import android.util.Log
 import android.view.*
 import android.widget.FrameLayout
 import androidx.lifecycle.*
@@ -18,13 +16,11 @@ import kotlin.math.*
 
 class ArView(
     context: Context,
-    private val activity: Activity,
-    private val activityLifecycle: Lifecycle,
     messenger: BinaryMessenger,
     id: Int,
+    private val activityLifecycle: Lifecycle,
 ) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
-    private val TAG: String = "ArView_Native"
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val rootLayout: ViewGroup = FrameLayout(context)
@@ -93,7 +89,7 @@ class ArView(
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // 2. Dots Count (Production Method)
+        // 2. Dots Count
         frame.acquirePointCloud()?.use { pc ->
             packet["featureCount"] = pc.points.remaining() / 4
         }
@@ -101,7 +97,6 @@ class ArView(
         // 3. Precise Hit Testing
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         
-        // Find Plane, then Depth, then Instant
         val bestHit = hits.firstOrNull { h -> h.trackable is Plane }
             ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
             ?: frame.hitTestInstantPlacement(sceneView.width / 2f, sceneView.height / 2f, 2.0f).firstOrNull()
@@ -110,24 +105,27 @@ class ArView(
             val hp = bestHit.hitPose
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             
-            // Euclidean Distance
+            // Precise Distance
             packet["distance"] = sqrt(
-                (hp.tx() - cp.tx()).pow(2) + 
-                (hp.ty() - cp.ty()).pow(2) + 
-                (hp.tz() - cp.tz()).pow(2)
-            ).toDouble()
+                (hp.tx() - cp.tx()).toDouble().pow(2) + 
+                (hp.ty() - cp.ty()).toDouble().pow(2) + 
+                (hp.tz() - cp.tz()).toDouble().pow(2)
+            )
 
-            // Surface Classification via Normal (Y-Axis of the hit pose)
+            // Classification via Normal
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             
-            // Wall Tilt (0 = vertical wall, 90 = flat floor)
+            // Tilt (0 = vertical wall, 90 = flat floor)
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
         isBridgeBusy = true
-        activity.runOnUiThread {
-            if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+        // Switch to Main thread for MethodChannel invocation
+        Handler(Looper.getMainLooper()).post {
+            if (!isDestroyed.get()) {
+                sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+            }
             isBridgeBusy = false
         }
     }
@@ -140,9 +138,11 @@ class ArView(
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(sceneView, bitmap, { res ->
             if (res == PixelCopy.SUCCESS) {
-                val stream = java.io.ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                result.success(stream.toByteArray())
+                mainScope.launch(Dispatchers.IO) {
+                    val stream = java.io.ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                }
             } else result.error("ERR", "Copy failed", null)
         }, Handler(Looper.getMainLooper()))
     }
@@ -154,10 +154,12 @@ class ArView(
     }
 
     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) {
-        if (!isDestroyed.get()) lifecycleRegistry.handleLifecycleEvent(e)
+        if (!isDestroyed.get()) {
+            if (e == Lifecycle.Event.ON_DESTROY) dispose()
+            else lifecycleRegistry.handleLifecycleEvent(e)
+        }
     }
 }
-
 
 
 // package net.kodified.ar_flutter_plugin_updated
