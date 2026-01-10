@@ -141,19 +141,28 @@ class ArView(
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // Hit Testing
+        // 🎯 HIT TEST FIX: Request Instant Placement with a preference for VERTICAL
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
-        val bestHit = hits.firstOrNull { 
-            val normal = it.hitPose.yAxis
-            abs(normal[1]) < 0.5 
-        } ?: hits.firstOrNull()
+
+        // 🎯 SELECTION FIX: Find the hit with the "most vertical" normal (Y-axis near 0)
+        val bestHit = hits.minByOrNull { Math.abs(it.hitPose.yAxis[1]) } ?: hits.firstOrNull()
 
         if (bestHit != null) {
-            packet["hit"] = serializeHitResult(bestHit)
-            packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
+            packet["hitType"] = "POINT"
             val hp = bestHit.hitPose
-            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
-            packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
+            packet["hit"] = mapOf("transform" to matrixToArray(hp))
+            
+            // Calculate distance
+            packet["distance"] = Math.sqrt(
+                Math.pow((hp.tx() - camPose.tx()).toDouble(), 2.0) +
+                Math.pow((hp.ty() - camPose.ty()).toDouble(), 2.0) +
+                Math.pow((hp.tz() - camPose.tz()).toDouble(), 2.0)
+            )
+            
+            // 🎯 TILT FIX: Use absolute verticality
+            // 0 = Vertical Wall, 90 = Flat Floor
+            val tilt = Math.acos(Math.abs(hp.yAxis[1]).toDouble()) * (180.0 / Math.PI)
+            packet["wallTilt"] = 90.0 - tilt
         }
 
         // 🔥 Send to Flutter
