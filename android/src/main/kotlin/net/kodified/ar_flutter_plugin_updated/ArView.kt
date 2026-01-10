@@ -3,6 +3,7 @@ package net.kodified.ar_flutter_plugin_updated
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.*
+import android.util.Log
 import android.view.*
 import android.widget.FrameLayout
 import androidx.lifecycle.*
@@ -46,7 +47,7 @@ class ArView(
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    instantPlacementMode = Config.InstantPlacementMode.LOCAL_Y_UP
+                    // Production depth is critical for non-textured walls
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
@@ -65,7 +66,7 @@ class ArView(
         }
 
         sceneView.onSessionUpdated = { _, frame ->
-            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 33L)) {
+            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 48L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
             }
@@ -73,7 +74,6 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-        val session = sceneView.session ?: return
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
@@ -94,38 +94,30 @@ class ArView(
             packet["featureCount"] = pc.points.remaining() / 4
         }
 
-        // 3. Precise Hit Testing
+        // 3. Hit Test Logic (PRIORITIZING VERTICAL)
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         
-        val bestHit = hits.firstOrNull { h -> h.trackable is Plane }
-            ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
-            ?: frame.hitTestInstantPlacement(sceneView.width / 2f, sceneView.height / 2f, 2.0f).firstOrNull()
+        // Find best vertical hit (Normal Y near 0.0)
+        val bestHit = hits.firstOrNull { h -> 
+            val normalY = abs(h.hitPose.yAxis[1])
+            normalY < 0.5 // Priority to Walls
+        } ?: hits.firstOrNull() // Fallback to floor
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             
-            // Precise Distance
-            packet["distance"] = sqrt(
-                (hp.tx() - cp.tx()).toDouble().pow(2) + 
-                (hp.ty() - cp.ty()).toDouble().pow(2) + 
-                (hp.tz() - cp.tz()).toDouble().pow(2)
-            )
+            val dist = sqrt((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2))
+            packet["distance"] = dist.toDouble()
 
-            // Classification via Normal
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
-            
-            // Tilt (0 = vertical wall, 90 = flat floor)
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
         isBridgeBusy = true
-        // Switch to Main thread for MethodChannel invocation
         Handler(Looper.getMainLooper()).post {
-            if (!isDestroyed.get()) {
-                sessionChannel.invokeMethod("onUnifiedUpdate", packet)
-            }
+            if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
             isBridgeBusy = false
         }
     }
