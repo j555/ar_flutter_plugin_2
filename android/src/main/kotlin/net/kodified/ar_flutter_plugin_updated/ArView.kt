@@ -108,7 +108,9 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
+        val frame = session?.update() ?: return
         val camera = frame.camera
+
         // 🛡️ LOCK: Only send data if the hardware is actually tracking
         if (camera.trackingState != TrackingState.TRACKING) return
 
@@ -142,27 +144,37 @@ class ArView(
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
         // 🎯 HIT TEST FIX: Request Instant Placement with a preference for VERTICAL
-        val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
+        val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
 
         // 🎯 SELECTION FIX: Find the hit with the "most vertical" normal (Y-axis near 0)
-        val bestHit = hits.minByOrNull { Math.abs(it.hitPose.yAxis[1]) } ?: hits.firstOrNull()
+        val bestHit = hits.firstOrNull { it.trackable is Plane } 
+              ?: hits.firstOrNull { it.trackable is DepthPoint }
+              ?: frame.hitTestInstantPlacement(sceneView.width / 2f, sceneView.height / 2f, 2.0f).firstOrNull()
 
         if (bestHit != null) {
-            packet["hitType"] = "POINT"
             val hp = bestHit.hitPose
+            val cp = camera.pose
+            
+            // Calculate the Normal Vector of the surface
+            // In ARCore, the Y-axis (index 1) of a Plane's HitPose is the Normal
+            val normal = hp.yAxis 
+            
+            packet["hitType"] = when {
+                Math.abs(normal[1]) > 0.7 -> "HORIZONTAL" // Floor/Ceiling
+                else -> "VERTICAL" // Wall
+            }
+            
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             
-            // Calculate distance
+            // Precise Euclidean Distance
             packet["distance"] = Math.sqrt(
-                Math.pow((hp.tx() - camPose.tx()).toDouble(), 2.0) +
-                Math.pow((hp.ty() - camPose.ty()).toDouble(), 2.0) +
-                Math.pow((hp.tz() - camPose.tz()).toDouble(), 2.0)
+                Math.pow((hp.tx() - cp.tx()).toDouble(), 2.0) +
+                Math.pow((hp.ty() - cp.ty()).toDouble(), 2.0) +
+                Math.pow((hp.tz() - cp.tz()).toDouble(), 2.0)
             )
             
-            // 🎯 TILT FIX: Use absolute verticality
-            // 0 = Vertical Wall, 90 = Flat Floor
-            val tilt = Math.acos(Math.abs(hp.yAxis[1]).toDouble()) * (180.0 / Math.PI)
-            packet["wallTilt"] = 90.0 - tilt
+            // wallTilt: 0 = Vertical, 90 = Horizontal
+            packet["wallTilt"] = Math.toDegrees(Math.acos(Math.abs(normal[1]).toDouble()))
         }
 
         // 🔥 Send to Flutter
