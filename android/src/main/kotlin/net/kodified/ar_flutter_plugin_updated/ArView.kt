@@ -196,6 +196,19 @@ class ArView(
         }, Handler(Looper.getMainLooper()))
     }
 
+    private fun handleSnapshot(result: MethodChannel.Result) {
+        if (isDestroyed || sceneView.width <= 0) return result.error("ERR", "View invalid", null)
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(sceneView, bitmap, { res ->
+            if (res == PixelCopy.SUCCESS) {
+                mainScope.launch(Dispatchers.IO) {
+                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                }
+            } else result.error("SNAP_FAIL", "Failed", null)
+        }, Handler(Looper.getMainLooper()))
+    }
+
     // --- ARCHITECTURAL TEARDOWN FIX ---
     
     override fun dispose() {
