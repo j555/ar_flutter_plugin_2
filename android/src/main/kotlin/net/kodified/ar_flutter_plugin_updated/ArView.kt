@@ -109,34 +109,39 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
+        // 🛡️ LOCK: Only send data if the hardware is actually tracking
+        if (camera.trackingState != TrackingState.TRACKING) return
+
         val packet = mutableMapOf<String, Any>()
         
-        // 🛡️ MANDATORY INITIALIZATION
+        // 🎯 INITIALIZE ALL KEYS (No more Nulls)
         packet["featureCount"] = 0
         packet["distance"] = 0.0
         packet["wallTilt"] = 0.0
         packet["hitType"] = "NONE"
-
-        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        
+        // Core Matrices
+        val camPose = camera.displayOrientedPose
+        packet["cameraPose"] = matrixToArray(camPose)
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
 
-        // 🎯 DOTS COUNTER
-        var actualDots = 0
+        // Dots Count
+        var dotsSeen = 0
         try {
             frame.acquirePointCloud()?.use { pc ->
-                actualDots = pc.points.remaining() / 4
-                packet["featureCount"] = actualDots
+                dotsSeen = pc.points.remaining() / 4
+                packet["featureCount"] = dotsSeen
             }
         } catch (e: Exception) { }
 
-        // 🎯 COORDINATE NORMALIZATION
+        // Normalize Center Coordinates
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // 🎯 PERMISSIVE HIT TESTING
+        // Hit Testing
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
@@ -144,11 +149,11 @@ class ArView(
             packet["hit"] = serializeHitResult(bestHit)
             packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
             val hp = bestHit.hitPose
-            val cp = camera.displayOrientedPose
-            packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
         }
 
+        // 🔥 Send to Flutter
         isBridgeBusy = true
         activity.runOnUiThread {
             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
