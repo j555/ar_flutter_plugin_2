@@ -29,7 +29,6 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
 }
 
 
-
 // package net.kodified.ar_flutter_plugin_updated
 
 // import android.app.Activity

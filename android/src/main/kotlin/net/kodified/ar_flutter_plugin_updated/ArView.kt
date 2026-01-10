@@ -16,8 +16,8 @@ import kotlin.math.*
 
 class ArView(
     context: Context,
-    messenger: BinaryMessenger,
-    id: Int,
+    private val messenger: BinaryMessenger,
+    private val id: Int,
     private val activityLifecycle: Lifecycle,
 ) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
@@ -26,14 +26,14 @@ class ArView(
     private val rootLayout: ViewGroup = FrameLayout(context)
     private val sceneView: ARSceneView = ARSceneView(context, null)
     
-    // 🎯 PRODUCTION SYNC: Manager expects "arflutter_session_" or "arsession_"
-    private val sessionChannel = MethodChannel(messenger, "arflutter_session_$id")
+    // 🎯 CHANNEL FIX: Matches the Flutter side's expectation
+    private val sessionChannel = MethodChannel(messenger, "arsession_$id")
     
     private val isDestroyed = AtomicBoolean(false)
     private var isCenterHitTrackingEnabled = false
     private var isBridgeBusy = false
     private var lastFrameTime: Long = 0
-    private var currentArFrame: Frame? = null 
+    private var currentArFrame: Frame? = null
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override fun getView(): View = rootLayout 
@@ -58,7 +58,9 @@ class ArView(
         rootLayout.addView(sceneView)
 
         sessionChannel.setMethodCallHandler { call, result ->
+            if (isDestroyed.get()) return@setMethodCallHandler
             when (call.method) {
+                "init" -> result.success(null) // 🎯 HANDLE INIT
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "snapshot" -> handleSnapshot(result)
@@ -71,7 +73,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // Gate to 20fps for buffer health
+            // Gate to 20fps to prevent starving the GPU buffer
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -100,8 +102,8 @@ class ArView(
         if (bestHit != null) {
             val hp = bestHit.hitPose
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
-            val dist = sqrt((hp.tx()-camera.pose.tx()).toDouble().pow(2) + (hp.ty()-camera.pose.ty()).toDouble().pow(2) + (hp.tz()-camera.pose.tz()).toDouble().pow(2))
-            packet["distance"] = dist
+            val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2))
+            packet["distance"] = dist.toDouble()
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
@@ -116,6 +118,10 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
+        // Stop telemetry to ensure the PixelCopy buffer is available
+        val wasTracking = isCenterHitTrackingEnabled
+        isCenterHitTrackingEnabled = false
+
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         try {
             PixelCopy.request(sceneView, bitmap, { res ->
@@ -124,25 +130,33 @@ class ArView(
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
                         val bytes = stream.toByteArray()
-                        withContext(Dispatchers.Main) { result.success(bytes) }
+                        withContext(Dispatchers.Main) { 
+                            result.success(bytes) 
+                            isCenterHitTrackingEnabled = wasTracking
+                        }
                     }
-                } else result.error("ERR", "PixelCopy failed: $res", null)
+                } else {
+                    result.error("ERR_SNAPSHOT", "Hardware result: $res", null)
+                    isCenterHitTrackingEnabled = wasTracking
+                }
             }, Handler(Looper.getMainLooper()))
         } catch (e: Exception) {
-            result.error("ERR", e.message, null)
+            isCenterHitTrackingEnabled = wasTracking
+            result.error("ERR_FATAL", e.message, null)
         }
     }
 
     private fun handleGetIntrinsics(result: MethodChannel.Result) {
+        // 🎯 FIXED: Correct access to CameraIntrinsics properties
         currentArFrame?.camera?.imageIntrinsics?.let { i ->
-            val out = HashMap<String, Double>()
-            out["fx"] = i.focalLength[0].toDouble()
-            out["fy"] = i.focalLength[1].toDouble()
-            out["cx"] = i.principalPoint[0].toDouble()
-            out["cy"] = i.principalPoint[1].toDouble()
-            out["width"] = i.imageDimensions[0].toDouble()
-            out["height"] = i.imageDimensions[1].toDouble()
-            result.success(out)
+            val map = HashMap<String, Double>()
+            map["fx"] = i.focalLength[0].toDouble()
+            map["fy"] = i.focalLength[1].toDouble()
+            map["cx"] = i.principalPoint[0].toDouble()
+            map["cy"] = i.principalPoint[1].toDouble()
+            map["width"] = i.imageDimensions[0].toDouble()
+            map["height"] = i.imageDimensions[1].toDouble()
+            result.success(map)
         } ?: result.error("ERR", "Intrinsics null", null)
     }
 
