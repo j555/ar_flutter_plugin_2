@@ -18,6 +18,7 @@ import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.ar.node.CloudAnchorNode
+import io.github.sceneview.loaders.MaterialLoader
 import io.github.sceneview.math.*
 import io.github.sceneview.node.*
 import kotlinx.coroutines.*
@@ -53,13 +54,14 @@ class ArView(
     private var lastFrameTime: Long = 0
     private var bufferHeartbeat: Long = 0
 
+    // 🎯 FIX: Explicitly override the lifecycle property required by LifecycleOwner
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
-    // --- CHANNEL HANDLERS (Atomic Initialization) ---
+    // --- CHANNEL HANDLERS ---
 
     private val onSessionMethodCall = MethodChannel.MethodCallHandler { call, result ->
         if (isDestroyed) return@MethodCallHandler
-        logHardware("FLUTTER_SIGNAL -> ${call.method}")
+        logHardware("Action: ${call.method}")
         when (call.method) {
             "init" -> handleInit(call, result)
             "snapshot" -> handleSnapshot(result)
@@ -98,14 +100,13 @@ class ArView(
     }
 
     init {
-        logHardware("BOOT_ENGINE: Initializing Pixel 7 Optimized Stack")
+        logHardware("Engine Startup")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
             lifecycle = lifecycleRegistry
             sessionConfiguration = { session, config ->
-                logHardware("BOOT_CONFIG: Setting Plane/Depth Modes")
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
@@ -113,7 +114,6 @@ class ArView(
                     focusMode = Config.FocusMode.AUTO
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
-                        logHardware("FEATURE_LOG: Hardware Depth Enabled")
                     }
                 }
             }
@@ -138,11 +138,12 @@ class ArView(
                     broadcastHardwareTelemetry(frame)
                 }
 
-                // 🎯 FIX BUFFER EXHAUSTION: Manually Release Hardware Point Handle
+                // 🎯 FIX: Immediate buffer release to prevent "Unable to acquire buffer item"
                 try {
-                    frame.acquirePointCloud().use { 
+                    frame.acquirePointCloud()?.let { pc ->
+                        pc.release()
                         bufferHeartbeat++
-                        if (bufferHeartbeat % 200 == 0L) logHardware("RESOURCE_HEALTH: NOMINAL (Buffer Safe)")
+                        if (bufferHeartbeat % 200 == 0L) logHardware("Resources Nominal (Frame $bufferHeartbeat)")
                     }
                 } catch (e: Exception) { }
             }
@@ -150,7 +151,6 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-        if (isDestroyed) return
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
@@ -162,16 +162,13 @@ class ArView(
         packet["cameraPose"] = camArr.map { it.toDouble() }
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
-        
-        // 🎯 FIX DART CAST ERROR: Ensure augmentedImages is never null
-        packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
+        packet["augmentedImages"] = ArrayList<Map<String, Any>>() // 🎯 FIX: Never null for Dart
 
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         hits.firstOrNull { it.trackable is Plane }?.let { hit ->
             packet["hit"] = serializeHitResult(hit)
             packet["hitType"] = "PLANE"
             
-            // Precision math using raw hardware poses
             val hp = hit.hitPose
             val dist = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["distance"] = dist
@@ -180,7 +177,7 @@ class ArView(
             packet["wallTilt"] = 90.0 - (acos(abs(normal[1]).toDouble()) * (180.0 / PI))
         } ?: run { 
             packet["hitType"] = "NONE" 
-            packet["hit"] = emptyMap<String, Any>() 
+            packet["hit"] = emptyMap<String, Any>()
         }
 
         isBridgeBusy = true
@@ -191,9 +188,9 @@ class ArView(
     }
 
     private fun handleCaptureBundle(result: MethodChannel.Result) {
-        val frame = currentArFrame ?: return result.error("ERR", "Hardware context lost", null)
+        val frame = currentArFrame ?: return result.error("ERR", "No frame", null)
         val camera = frame.camera
-        logHardware("CAPTURE_BUNDLE: Locking matrix state...")
+        logHardware("Locking bundle state...")
         
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.01f, 100.0f)
         val view = FloatArray(16); camera.getViewMatrix(view, 0)
@@ -216,12 +213,9 @@ class ArView(
                         "viewMatrix" to view.map { it.toDouble() },
                         "intrinsics" to intrinsicMap
                     )
-                    withContext(Dispatchers.Main) { 
-                        logHardware("CAPTURE_SUCCESS: Generated ${stream.size() / 1024} KB bundle")
-                        result.success(bundle) 
-                    }
+                    withContext(Dispatchers.Main) { result.success(bundle) }
                 }
-            } else result.error("ERR", "PixelCopy failure", null)
+            } else result.error("ERR", "PixelCopy Failed", null)
         }, Handler(Looper.getMainLooper()))
     }
 
@@ -238,35 +232,30 @@ class ArView(
                 }
             }
             result.success(name)
-        } ?: result.error("NOT_FOUND", "Node handle invalid", null)
+        } ?: result.error("ERR", "Node missing", null)
     }
 
     private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) {
         val name = call.argument<String>("name") ?: return
-        val t = call.argument<ArrayList<Double>> Brook ?: return
+        val t = call.argument<ArrayList<Double>>("transformation") ?: return
+        
+        // 🎯 FIX: Robust float conversion for SceneView Math
+        val matrixValues = t.map { it.toFloat() }.toFloatArray()
         nodesMap[name]?.apply { 
-            transform(dev.romainguy.kotlin.math.Mat4.of(*t.map { it.toFloat() }.toFloatArray())) 
+            transform(dev.romainguy.kotlin.math.Mat4.of(*matrixValues)) 
             result.success(null)
         }
     }
 
-    // --- SUPPORTING METHODS (Preserved ORIGINAL Features) ---
-
-    private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
-        sceneView.planeRenderer.isEnabled = call.argument<Boolean>("showPlanes") ?: true
-        result.success(null)
-    }
-
-    private fun handleSnapshot(result: MethodChannel.Result) {
-        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(sceneView, bitmap, { res ->
-            if (res == PixelCopy.SUCCESS) {
-                mainScope.launch(Dispatchers.IO) {
-                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
-                }
-            } else result.error("ERR", "Snap fail", null)
-        }, Handler(Looper.getMainLooper()))
+    // 🎯 FIX: Added Missing handleRemoveAnchor Reference
+    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) {
+        if (name == null) return result.error("ERR", "Name null", null)
+        anchorNodesMap[name]?.let { 
+            sceneView.removeChildNode(it)
+            it.anchor?.detach()
+            anchorNodesMap.remove(name)
+            result.success(null) 
+        } ?: result.error("ERR", "Anchor missing", null)
     }
 
     private fun handleAddNode(nodeData: Map<String, Any>, result: MethodChannel.Result) {
@@ -279,8 +268,7 @@ class ArView(
                 sceneView.modelLoader.loadModelInstance(uri)?.let { inst ->
                     val node = ModelNode(inst).apply { 
                         name = nodeData["name"] as? String 
-                        val transform = nodeData["transformation"] as? ArrayList<Double>
-                        transform?.let { val s = it[0].toFloat(); scale = Scale(s, s, s) }
+                        (nodeData["transformation"] as? ArrayList<Double>)?.let { val s = it[0].toFloat(); scale = Scale(s, s, s) }
                     }
                     sceneView.addChildNode(node); node.name?.let { nodesMap[it] = node }
                     result.success(true)
@@ -299,19 +287,13 @@ class ArView(
         } ?: result.success(false)
     }
 
-    private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) {
-        val id = call.argument<String>("anchorId")
-        val anchor = sceneView.session?.allAnchors?.find { it.cloudAnchorId == id } ?: anchorNodesMap[id]?.anchor
-        anchor?.let { val m = FloatArray(16); it.pose.toMatrix(m, 0); result.success(m.map { it.toDouble() }) }
-            ?: result.error("ERR", "Anchor context lost", null)
-    }
-
     private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) {
         sceneView.session?.let { s -> s.configure(s.config.apply { cloudAnchorMode = Config.CloudAnchorMode.ENABLED }); result.success(null) }
     }
 
     private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) {
-        anchorNodesMap[call.argument<String>("name")]?.let { node ->
+        val name = call.argument<String>("name")
+        anchorNodesMap[name]?.let { node ->
             val cloud = CloudAnchorNode(sceneView.engine, node.anchor!!)
             cloud.host(sceneView.session!!) { id, state -> if (state == Anchor.CloudAnchorState.SUCCESS) result.success(id) else result.error("ERR", state.name, null) }
             sceneView.addChildNode(cloud)
@@ -328,28 +310,29 @@ class ArView(
     private fun handleGetCameraPose(result: MethodChannel.Result) { val p = FloatArray(16); currentArFrame?.camera?.displayOrientedPose?.toMatrix(p, 0); result.success(p.map { it.toDouble() }) }
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) { val p = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(p, 0, 0.01f, 100f); result.success(p.map { it.toDouble() }) }
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) { currentArFrame?.camera?.imageIntrinsics?.let { i -> result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) } }
+    private fun handleSnapshot(result: MethodChannel.Result) { val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888); PixelCopy.request(sceneView, bitmap, { res -> if (res == PixelCopy.SUCCESS) { mainScope.launch(Dispatchers.IO) { val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream); withContext(Dispatchers.Main) { result.success(stream.toByteArray()) } } } }, Handler(Looper.getMainLooper())) }
+    private fun handleInit(call: MethodCall, result: MethodChannel.Result) { sceneView.planeRenderer.isEnabled = call.argument<Boolean>("showPlanes") ?: true; result.success(null) }
 
     override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
         if (!isDestroyed) {
-            logHardware("LIFECYCLE_TRANSITION: ${event.name}")
             if (event == Lifecycle.Event.ON_DESTROY) dispose()
             else lifecycleRegistry.handleLifecycleEvent(event)
         }
     }
 
     override fun getView(): View = rootLayout
-    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
+    private fun logHardware(msg: String) { Log.d(TAG, "🟢 [DEBUG] $msg") }
 
     override fun dispose() {
         if (isDestroyed) return
         isDestroyed = true
-        logHardware("TEARDOWN: Closing Data Stream and JNI Bridges")
+        logHardware("Teardown Initiated.")
         mainScope.cancel()
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
             
-            // 🎯 FIXED: Nullify channels BEFORE pausing hardware to prevent detached thread crash
+            // 🎯 FIXED: Stop bridge traffic BEFORE pausing hardware
             sessionChannel.setMethodCallHandler(null)
             objectChannel.setMethodCallHandler(null)
             anchorChannel.setMethodCallHandler(null)
