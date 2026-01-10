@@ -109,57 +109,51 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        val packet = mutableMapOf<String, Any>()
-        
-        // 🎯 INITIALIZE ALL KEYS: Ensures Dart never sees a "Null" where it expects a "num"
-        packet["featureCount"] = 0 
-        packet["distance"] = 0.0
-        packet["wallTilt"] = 0.0
-        packet["hitType"] = "NONE"
+        if (camera.trackingState != TrackingState.TRACKING) return
 
-        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        val packet = mutableMapOf<String, Any>()
+        val camPose = camera.displayOrientedPose
+        packet["cameraPose"] = matrixToArray(camPose)
+        
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
 
-        // Acquire point cloud safely
+        // 🎯 FIX: 'features' variable moved outside try block for scope access
+        var featuresCount = 0
         try {
             frame.acquirePointCloud()?.use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4
+                featuresCount = pc.points.remaining() / 4
             }
         } catch (e: Exception) { }
+        packet["featureCount"] = featuresCount
 
-        // Normalize Center
+        // 🎯 View-to-Sensor Mapping for Pixel 7 Aspect Ratio Fix
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
-        // 🎯 THE HIT TEST
-        // We check standard HitTest first, then Instant Placement as fallback
-        val hits = frame.hitTest(normalizedCoords[0], normalizedCoords[1])
-        var bestHit = hits.firstOrNull { it.trackable is Plane }
-        
-        if (bestHit == null) {
-            val instantHits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
-            bestHit = instantHits.firstOrNull()
-        }
+        // Robust HitTest
+        val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
+        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
-        bestHit?.let { hit ->
-            packet["hit"] = serializeHitResult(hit)
-            packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
-            val hp = hit.hitPose
-            val cp = camera.displayOrientedPose
-            packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
+        if (bestHit != null) {
+            packet["hit"] = serializeHitResult(bestHit)
+            packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
+            val hp = bestHit.hitPose
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
+        } else {
+            packet["hitType"] = "NONE"
+            packet["distance"] = 0.0
+            packet["wallTilt"] = 0.0
         }
 
-        // 🔍 DEBUG LOGGING (Fixed String Templates)
+        // 🔍 DEEP DEBUG LOGGING
         val now = System.currentTimeMillis()
         if (now - lastLogTime > 2000) {
             lastLogTime = now
-            val hitType = packet["hitType"] as String
-            val dist = packet["distance"] as Double
-            Log.d(TAG, "📊 [PERCEPTION] Status: ${camera.trackingState} | Dots: $features | Hit: $hitType | Dist: ${dist}m")
+            Log.d(TAG, "📊 PERCEPTION: Dots: $featuresCount | Hit: ${packet["hitType"]} | Dist: ${packet["distance"]}m | NormCoords: ${normalizedCoords[0]},${normalizedCoords[1]}")
         }
 
         isBridgeBusy = true
