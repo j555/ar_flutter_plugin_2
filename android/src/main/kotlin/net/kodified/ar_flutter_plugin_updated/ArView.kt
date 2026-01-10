@@ -16,23 +16,24 @@ import kotlin.math.*
 
 class ArView(
     context: Context,
-    private val messenger: BinaryMessenger,
-    private val id: Int,
+    messenger: BinaryMessenger,
+    id: Int,
     private val activityLifecycle: Lifecycle,
 ) : PlatformView, LifecycleOwner, LifecycleEventObserver {
 
-    private val TAG: String = "ArView_Native"
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val rootLayout: ViewGroup = FrameLayout(context)
     private val sceneView: ARSceneView = ARSceneView(context, null)
-    private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    
+    // 🎯 PRODUCTION SYNC: Manager expects "arflutter_session_" or "arsession_"
+    private val sessionChannel = MethodChannel(messenger, "arflutter_session_$id")
     
     private val isDestroyed = AtomicBoolean(false)
     private var isCenterHitTrackingEnabled = false
     private var isBridgeBusy = false
     private var lastFrameTime: Long = 0
-    private var currentArFrame: Frame? = null
+    private var currentArFrame: Frame? = null 
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
     override fun getView(): View = rootLayout 
@@ -57,7 +58,6 @@ class ArView(
         rootLayout.addView(sceneView)
 
         sessionChannel.setMethodCallHandler { call, result ->
-            if (isDestroyed.get()) return@setMethodCallHandler
             when (call.method) {
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
@@ -71,7 +71,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // Gate the bridge updates to 20fps to preserve buffer bandwidth
+            // Gate to 20fps for buffer health
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -99,12 +99,9 @@ class ArView(
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
-            val cp = camera.pose
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
-            
-            val dist = sqrt((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble()
+            val dist = sqrt((hp.tx()-camera.pose.tx()).toDouble().pow(2) + (hp.ty()-camera.pose.ty()).toDouble().pow(2) + (hp.tz()-camera.pose.tz()).toDouble().pow(2))
             packet["distance"] = dist
-
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
@@ -119,18 +116,7 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
-        // Pause bridge to ensure buffer availability
-        val wasTracking = isCenterHitTrackingEnabled
-        isCenterHitTrackingEnabled = false
-
-        val viewWidth = sceneView.width
-        val viewHeight = sceneView.height
-        if (viewWidth <= 0 || viewHeight <= 0) {
-            result.error("ERR", "Invalid View Size", null)
-            return
-        }
-
-        val bitmap = Bitmap.createBitmap(viewWidth, viewHeight, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         try {
             PixelCopy.request(sceneView, bitmap, { res ->
                 if (res == PixelCopy.SUCCESS) {
@@ -138,19 +124,12 @@ class ArView(
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
                         val bytes = stream.toByteArray()
-                        withContext(Dispatchers.Main) { 
-                            result.success(bytes) 
-                            isCenterHitTrackingEnabled = wasTracking
-                        }
+                        withContext(Dispatchers.Main) { result.success(bytes) }
                     }
-                } else {
-                    result.error("ERR_SNAPSHOT", "PixelCopy code: $res", null)
-                    isCenterHitTrackingEnabled = wasTracking
-                }
+                } else result.error("ERR", "PixelCopy failed: $res", null)
             }, Handler(Looper.getMainLooper()))
         } catch (e: Exception) {
-            isCenterHitTrackingEnabled = wasTracking
-            result.error("ERR_FATAL", e.message, null)
+            result.error("ERR", e.message, null)
         }
     }
 
