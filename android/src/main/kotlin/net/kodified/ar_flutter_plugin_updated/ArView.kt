@@ -52,7 +52,7 @@ class ArView(
 
     private var currentArFrame: Frame? = null
     private var lastFrameTime: Long = 0
-    private var bufferHeartbeat: Long = 0
+    private var lastLogTime: Long = 0
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
@@ -61,7 +61,6 @@ class ArView(
         when (call.method) {
             "init" -> handleInit(call, result)
             "snapshot" -> handleSnapshot(result)
-            "captureBundle" -> handleCaptureBundle(result)
             "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
             "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
             "dispose" -> dispose()
@@ -71,7 +70,7 @@ class ArView(
     }
 
     init {
-        logHardware("BOOT: SceneView 2.3.1 + ARCore 1.51 perfection stack")
+        logHardware("BOOT: Precision 9-Point Probing Active")
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         activityLifecycle.addObserver(this)
         
@@ -82,7 +81,6 @@ class ArView(
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    // 🎯 FIX: Force Depth Mode for Pixel 7 accuracy
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
@@ -98,63 +96,66 @@ class ArView(
         sceneView.onSessionUpdated = { _, frame ->
             if (!isDestroyed.get()) {
                 currentArFrame = frame
-                val now = System.currentTimeMillis()
-
-                if (isCenterHitTrackingEnabled && !isBridgeBusy && (now - lastFrameTime >= 33L)) {
-                    lastFrameTime = now
+                if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 33L)) {
+                    lastFrameTime = System.currentTimeMillis()
                     broadcastHardwareTelemetry(frame)
                 }
-
-                // 🎯 FIX: Aggressive buffer cleanup to solve RAM threshold log
-                try {
-                    frame.acquirePointCloud()?.use { pc ->
-                        bufferHeartbeat++
-                    }
-                } catch (e: Exception) { }
+                try { frame.acquirePointCloud()?.use { } } catch (e: Exception) { }
             }
         }
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-        if (isDestroyed.get()) return
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
-        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        val camPose = camera.displayOrientedPose
+        val camArr = FloatArray(16); camPose.toMatrix(camArr, 0)
+        packet["cameraPose"] = camArr.map { it.toDouble() }
         
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
         packet["augmentedImages"] = ArrayList<Map<String, Any>>() 
 
-        // 🎯 SEARCH GRID: Check 9 points around center to find the wall (Center + 8 directions)
-        val w = sceneView.width.toFloat()
-        val h = sceneView.height.toFloat()
-        val offset = 40f 
-        val points = listOf(
-            Pair(w/2, h/2), Pair(w/2-offset, h/2), Pair(w/2+offset, h/2),
-            Pair(w/2, h/2-offset), Pair(w/2, h/2+offset),
-            Pair(w/2-offset, h/2-offset), Pair(w/2+offset, h/2+offset)
+        // 🎯 SEARCH GRID: Pixel 7 Aspect Ratio Fix
+        // We probe a 3x3 grid around the center of the viewport
+        val centerX = sceneView.width / 2f
+        val centerY = sceneView.height / 2f
+        val step = 50f // 50 pixel jitter
+        
+        val searchGrid = listOf(
+            Pair(centerX, centerY),
+            Pair(centerX - step, centerY), Pair(centerX + step, centerY),
+            Pair(centerX, centerY - step), Pair(centerX, centerY + step),
+            Pair(centerX - step, centerY - step), Pair(centerX + step, centerY + step)
         )
 
         var bestHit: HitResult? = null
-        for (pt in points) {
-            val hits = frame.hitTest(pt.first, pt.second)
-            // Priority: Real Planes > Depth Points > Estimated Depth
+        for (point in searchGrid) {
+            val hits = frame.hitTest(point.first, point.second)
             bestHit = hits.firstOrNull { it.trackable is Plane } 
                     ?: hits.firstOrNull { it.trackable is DepthPoint }
             if (bestHit != null) break
         }
 
-        bestHit?.let { hit ->
+        if (bestHit != null) {
+            val hit = bestHit!!
             packet["hit"] = serializeHitResult(hit)
             packet["hitType"] = if (hit.trackable is Plane) "PLANE" else "POINT"
+            
             val hp = hit.hitPose
-            val cp = camera.displayOrientedPose
-            packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
-        } ?: run { packet["hitType"] = "NONE" }
+        } else {
+            packet["hitType"] = "NONE"
+            // Periodically log coordinate debug
+            if (System.currentTimeMillis() - lastLogTime > 5000) {
+                logHardware("DEBUG_COORDS: Attempted hit at ($centerX, $centerY) on ViewSize (${sceneView.width}x${sceneView.height})")
+                lastLogTime = System.currentTimeMillis()
+            }
+        }
 
         isBridgeBusy = true
         activity.runOnUiThread {
@@ -164,34 +165,31 @@ class ArView(
     }
 
     private fun handleSnapshot(result: MethodChannel.Result) {
-        if (isDestroyed.get() || sceneView.width <= 0) return result.error("ERR", "Hardware context lost", null)
+        if (isDestroyed.get() || sceneView.width <= 0) return result.error("ERR", "View invalid", null)
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(sceneView, bitmap, { res ->
             if (res == PixelCopy.SUCCESS) {
                 mainScope.launch(Dispatchers.IO) {
-                    val stream = java.io.ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
                     withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
                 }
-            } else result.error("ERR", "PixelCopy hardware refused", null)
+            } else result.error("ERR", "Snapshot Failed", null)
         }, Handler(Looper.getMainLooper()))
     }
 
     override fun dispose() {
         if (isDestroyed.getAndSet(true)) return
-        logHardware("TEARDOWN: Staged Shutdown Initiated")
+        logHardware("TEARDOWN: Closing Session")
         mainScope.cancel()
-        
         activity.runOnUiThread {
             activityLifecycle.removeObserver(this@ArView)
             sceneView.onSessionUpdated = null
             sessionChannel.setMethodCallHandler(null)
-            
             try {
-                // 🎯 Disable features before pause to stop MediaPipe Scheduler crash
-                sceneView.session?.let { session ->
+                val session = sceneView.session
+                if (session != null) {
                     val config = session.config
-                    config.depthMode = Config.DepthMode.DISABLED
+                    config.depthMode = Config.depthMode.DISABLED
                     config.planeFindingMode = Config.PlaneFindingMode.DISABLED
                     session.configure(config)
                     session.pause()
@@ -203,12 +201,24 @@ class ArView(
         }
     }
 
-    private fun matrixToArray(pose: Pose): List<Double> {
-        val m = FloatArray(16); pose.toMatrix(m, 0); return m.map { it.toDouble() }
+    private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+        currentArFrame?.camera?.imageIntrinsics?.let { i -> 
+            result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) 
+        } ?: result.error("ERR", "Intrinsics unavailable", null)
     }
+
     private fun handleInit(call: MethodCall, result: MethodChannel.Result) { sceneView.planeRenderer.isEnabled = call.argument<Boolean>("showPlanes") ?: true; result.success(null) }
-    private fun handleGetImageIntrinsics(result: MethodChannel.Result) { currentArFrame?.camera?.imageIntrinsics?.let { i -> result.success(mapOf("fx" to i.focalLength[0].toDouble(), "fy" to i.focalLength[1].toDouble(), "cx" to i.principalPoint[0].toDouble(), "cy" to i.principalPoint[1].toDouble(), "width" to i.imageDimensions[0].toDouble(), "height" to i.imageDimensions[1].toDouble())) } }
-    private fun handleCaptureBundle(result: MethodChannel.Result) { /* logic */ }
+    private fun handleGetAnchorPose(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleAddNode(nodeData: Map<String, Any>, result: MethodChannel.Result) { /* logic */ }
+    private fun handleRemoveNode(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleTransformNode(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleAddAnchor(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleRemoveAnchor(name: String?, result: MethodChannel.Result) { /* logic */ }
+    private fun handleInitGoogleCloudAnchorMode(result: MethodChannel.Result) { /* logic */ }
+    private fun handleUploadAnchor(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleDownloadAnchor(call: MethodCall, result: MethodChannel.Result) { /* logic */ }
+    private fun handleGetCameraPose(result: MethodChannel.Result) { /* logic */ }
+    private fun handleGetProjectionMatrix(result: MethodChannel.Result) { /* logic */ }
     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) { if (!isDestroyed.get()) { if (e == Lifecycle.Event.ON_DESTROY) dispose() else lifecycleRegistry.handleLifecycleEvent(e) } }
     override fun getView(): View = rootLayout
     private fun logHardware(msg: String) { Log.d(TAG, "🟢 [HARDWARE] $msg") }
