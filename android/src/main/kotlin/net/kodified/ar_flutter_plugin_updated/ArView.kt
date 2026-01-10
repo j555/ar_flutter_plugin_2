@@ -59,12 +59,15 @@ class ArView(
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "snapshot" -> handleSnapshot(result)
+                "getImageIntrinsics" -> handleGetIntrinsics(result) // 🎯 Added for Save Logic
                 else -> result.success(null)
             }
         }
 
         sceneView.onSessionUpdated = { _, frame ->
-            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
+            // 🎯 PRODUCTION FIX: Use the frame provided by the listener. 
+            // Never call session.update() manually here.
+            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 66L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
             }
@@ -76,14 +79,19 @@ class ArView(
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
-        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        
+        // 1. Core Telemetry (DISPLAY ORIENTED)
+        val cameraPose = camera.displayOrientedPose
+        packet["cameraPose"] = matrixToArray(cameraPose)
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
+        // 2. Dots Count
         frame.acquirePointCloud()?.use { pc ->
             packet["featureCount"] = pc.points.remaining() / 4
         }
 
+        // 3. Precise Hit Testing
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> h.trackable is Plane }
             ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
@@ -91,13 +99,20 @@ class ArView(
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
-            val cp = camera.pose
+            packet["hitType"] = if (abs(hp.yAxis[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
-            packet["distance"] = sqrt((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble()
             
-            val normalY = abs(hp.yAxis[1])
-            packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
+            // Euclidean Distance
+            val dx = (hp.tx() - cameraPose.tx()).toDouble()
+            val dy = (hp.ty() - cameraPose.ty()).toDouble()
+            val dz = (hp.tz() - cameraPose.tz()).toDouble()
+            packet["distance"] = sqrt(dx*dx + dy*dy + dz*dz)
+
+            // Production Normal Vector for StandAngle calculation
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
+            
+            // Gravity Tilt
+            val normalY = abs(hp.yAxis[1])
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
@@ -108,30 +123,40 @@ class ArView(
         }
     }
 
-    // 🎯 PRODUCTION SNAPSHOT: Uses PixelCopy with a clean UI thread post
     private fun handleSnapshot(result: MethodChannel.Result) {
-        // Step 1: Temporarily stop the bridge to clear buffers
+        // Pause telemetry briefly to give GPU a breather
         val wasTracking = isCenterHitTrackingEnabled
         isCenterHitTrackingEnabled = false
 
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
         
-        try {
-            PixelCopy.request(sceneView, bitmap, { res ->
-                if (res == PixelCopy.SUCCESS) {
+        PixelCopy.request(sceneView, bitmap, { res ->
+            if (res == PixelCopy.SUCCESS) {
+                mainScope.launch(Dispatchers.IO) {
                     val stream = java.io.ByteArrayOutputStream()
                     bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    result.success(stream.toByteArray())
-                } else {
-                    result.error("ERR_SNAPSHOT", "Hardware result code: $res", null)
+                    val bytes = stream.toByteArray()
+                    withContext(Dispatchers.Main) { 
+                        result.success(bytes)
+                        isCenterHitTrackingEnabled = wasTracking
+                    }
                 }
-                // Step 2: Resume bridge
+            } else {
+                result.error("ERR_SNAPSHOT", "PixelCopy failed with code: $res", null)
                 isCenterHitTrackingEnabled = wasTracking
-            }, Handler(Looper.getMainLooper()))
-        } catch (e: Exception) {
-            isCenterHitTrackingEnabled = wasTracking
-            result.error("ERR_FATAL", e.message, null)
-        }
+            }
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun handleGetIntrinsics(result: MethodChannel.Result) {
+        sceneView.arSession?.update()?.camera?.imageIntrinsics?.let { i ->
+            result.success(mapOf(
+                "fx" to i.focalLength[0].toDouble(),
+                "fy" to i.focalLength[1].toDouble(),
+                "width" to i.imageDimensions[0].toDouble(),
+                "height" to i.imageDimensions[1].toDouble()
+            ))
+        } ?: result.error("ERR", "Hardware not ready", null)
     }
 
     private fun matrixToArray(p: Pose): List<Double> {
