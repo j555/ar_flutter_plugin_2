@@ -109,34 +109,34 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        if (camera.trackingState != TrackingState.TRACKING) return
-
         val packet = mutableMapOf<String, Any>()
         
-        // 🛡️ Pre-populate with defaults to prevent Dart Null-Crashes
+        // 🛡️ MANDATORY INITIALIZATION
         packet["featureCount"] = 0
         packet["distance"] = 0.0
         packet["wallTilt"] = 0.0
         packet["hitType"] = "NONE"
 
-        val camPose = camera.displayOrientedPose
-        packet["cameraPose"] = matrixToArray(camPose)
+        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.01f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
         packet["trackingState"] = camera.trackingState.name
 
-        var featuresCount = 0 // 🎯 Variable name fixed
+        // 🎯 DOTS COUNTER
+        var actualDots = 0
         try {
             frame.acquirePointCloud()?.use { pc ->
-                featuresCount = pc.points.remaining() / 4
-                packet["featureCount"] = featuresCount
+                actualDots = pc.points.remaining() / 4
+                packet["featureCount"] = actualDots
             }
         } catch (e: Exception) { }
 
+        // 🎯 COORDINATE NORMALIZATION
         val viewCoords = floatArrayOf(sceneView.width / 2f, sceneView.height / 2f)
         val normalizedCoords = FloatArray(2)
         frame.transformCoordinates2d(Coordinates2d.VIEW, viewCoords, Coordinates2d.VIEW_NORMALIZED, normalizedCoords)
 
+        // 🎯 PERMISSIVE HIT TESTING
         val hits = frame.hitTestInstantPlacement(normalizedCoords[0], normalizedCoords[1], 2.0f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull()
 
@@ -144,15 +144,9 @@ class ArView(
             packet["hit"] = serializeHitResult(bestHit)
             packet["hitType"] = if (bestHit.trackable is Plane) "PLANE" else "POINT"
             val hp = bestHit.hitPose
-            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+            val cp = camera.displayOrientedPose
+            packet["distance"] = sqrt(((hp.tx()-cp.tx()).pow(2) + (hp.ty()-cp.ty()).pow(2) + (hp.tz()-cp.tz()).pow(2)).toDouble())
             packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
-        }
-
-        // 🔍 Throttled Log (Fixed reference to featuresCount)
-        val now = System.currentTimeMillis()
-        if (now - lastLogTime > 2000) {
-            lastLogTime = now
-            Log.d(TAG, "📊 PERCEPTION: Dots: $featuresCount | Hit: ${packet["hitType"]} | Dist: ${packet["distance"]}m")
         }
 
         isBridgeBusy = true
