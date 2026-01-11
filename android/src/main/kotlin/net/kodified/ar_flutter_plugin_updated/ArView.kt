@@ -47,7 +47,6 @@ class ArView(
             this.lifecycle = activityLifecycle
             planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
             
-            // 🎯 FIXED: Access session safely through sceneView, not Config
             this.sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
@@ -86,25 +85,26 @@ class ArView(
         }
     }
 
-    // --- 🎯 FIXED LIFECYCLE OBSERVERS: No Coroutine Conflict ---
+    // --- 🎯 THE "NO-AMBIGUITY" LIFECYCLE FIX ---
+    // We use qualified calls to ensure the compiler doesn't use Coroutine "resume"
 
     override fun onResume(owner: LifecycleOwner) {
         if (!isDestroyed.get()) {
             try {
-                // 🎯 FIXED: Explicit casting to SceneView to force the correct .resume() method
-                (sceneView as io.github.sceneview.SceneView).resume()
+                // Call the specific SceneView resume, avoiding Coroutine conflict
+                this.sceneView.run { resume() }
             } catch (e: Exception) {
-                Log.e(TAG, "AR Resume error: ${e.message}")
+                Log.e(TAG, "Hardware resume error: ${e.message}")
             }
         }
     }
 
     override fun onPause(owner: LifecycleOwner) {
         try {
-            // 🎯 FIXED: Explicit casting to SceneView to force the correct .pause() method
-            (sceneView as io.github.sceneview.SceneView).pause()
+            // Call the specific SceneView pause
+            this.sceneView.run { pause() }
         } catch (e: Exception) {
-            Log.e(TAG, "AR Pause error: ${e.message}")
+            Log.e(TAG, "Hardware pause error: ${e.message}")
         }
     }
 
@@ -112,22 +112,31 @@ class ArView(
         dispose()
     }
 
-    // --- TELEMETRY & HARDWARE PACKETS ---
+    // --- TELEMETRY BROADCAST ---
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
-        packet["lightIntensity"] = frame.lightEstimate?.let { if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 } ?: 1.0
+        
+        // Accurate Lighting Intensity
+        val lightEstimate = frame.lightEstimate
+        packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
+            lightEstimate.pixelIntensity.toDouble()
+        } else {
+            1.0
+        }
+
         packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
+        // Core Hit Testing: Verify hits are on the polygon surface
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> 
             val t = h.trackable
-            t is Plane && t.isPoseInPolygon(h.hitPose)
+            (t is Plane && t.isPoseInPolygon(h.hitPose))
         } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
 
         if (bestHit != null) {
@@ -135,6 +144,7 @@ class ArView(
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
             packet["distance"] = dist
+            
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
@@ -148,14 +158,33 @@ class ArView(
         }
     }
 
+    // --- 🎯 RESTORED MISSING METHODS ---
+
+    private fun handleGetCameraPose(result: MethodChannel.Result) {
+        currentArFrame?.camera?.displayOrientedPose?.let { p -> 
+            result.success(matrixToArray(p)) 
+        } ?: result.error("ERR", "No pose available", null)
+    }
+
+    private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+        val proj = FloatArray(16)
+        currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+        result.success(proj.map { it.toDouble() })
+    }
+
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
         val intrinsics = frame.camera.imageIntrinsics
+        
         result.success(mapOf(
-            "fx" to intrinsics.focalLength[0].toDouble(), "fy" to intrinsics.focalLength[1].toDouble(),
-            "cx" to intrinsics.principalPoint[0].toDouble(), "cy" to intrinsics.principalPoint[1].toDouble(),
-            "width" to intrinsics.imageDimensions[0].toDouble(), "height" to intrinsics.imageDimensions[1].toDouble(),
-            "viewWidth" to sceneView.width.toDouble(), "viewHeight" to sceneView.height.toDouble(),
+            "fx" to intrinsics.focalLength[0].toDouble(),
+            "fy" to intrinsics.focalLength[1].toDouble(),
+            "cx" to intrinsics.principalPoint[0].toDouble(),
+            "cy" to intrinsics.principalPoint[1].toDouble(),
+            "width" to intrinsics.imageDimensions[0].toDouble(),
+            "height" to intrinsics.imageDimensions[1].toDouble(),
+            "viewWidth" to sceneView.width.toDouble(),
+            "viewHeight" to sceneView.height.toDouble(),
             "lightIntensity" to (frame.lightEstimate?.pixelIntensity?.toDouble() ?: 1.0)
         ))
     }
@@ -163,14 +192,18 @@ class ArView(
     private fun handleSnapshot(result: MethodChannel.Result) {
         if (sceneView.width <= 0 || sceneView.height <= 0) return result.error("ERR", "Invalid View", null)
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
-        PixelCopy.request(sceneView, bitmap, { res ->
-            if (res == PixelCopy.SUCCESS) {
-                mainScope.launch(Dispatchers.IO) {
-                    val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
-                }
-            } else result.error("ERR", "PixelCopy failed", null)
-        }, Handler(Looper.getMainLooper()))
+        try {
+            PixelCopy.request(sceneView, bitmap, { res ->
+                if (res == PixelCopy.SUCCESS) {
+                    mainScope.launch(Dispatchers.IO) {
+                        val stream = java.io.ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                        val bytes = stream.toByteArray()
+                        withContext(Dispatchers.Main) { result.success(bytes) }
+                    }
+                } else result.error("ERR", "PixelCopy failed: $res", null)
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) { result.error("ERR", e.message, null) }
     }
 
     private fun matrixToArray(p: Pose): List<Double> {
@@ -186,7 +219,6 @@ class ArView(
         sceneView.destroy()
     }
 }
-
 
 
 
