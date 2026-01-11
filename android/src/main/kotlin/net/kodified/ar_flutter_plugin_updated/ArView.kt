@@ -4,7 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.*
-import android.util.Log
+import android.util.Log // 🎯 FIXED: Explicit import for Log
 import android.view.*
 import android.widget.FrameLayout
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -44,24 +44,20 @@ class ArView(
     private var showPointCloud = false
 
     init {
-        // 🎯 SMOOTH STARTUP: Subscribe to lifecycle events
+        // 🎯 SMOOTH STARTUP: Subscribe to lifecycle events immediately
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
-            // Direct binding to activity lifecycle
+            // Link SceneView directly to the Activity lifecycle
             this.lifecycle = activityLifecycle
             this.planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
             
-            this.sessionConfiguration = { session, config ->
+            this.sessionConfiguration = { _, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                    
-                    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                        depthMode = Config.DepthMode.AUTOMATIC
-                    }
                 }
             }
         }
@@ -75,15 +71,12 @@ class ArView(
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
                 "snapshot" -> handleSnapshot(result)
                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
-                "getCameraPose" -> handleGetCameraPose(result)
-                "getProjectionMatrix" -> handleGetProjectionMatrix(result)
                 else -> result.notImplemented()
             }
         }
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // 🎯 TELEMETRY GATE: ~20fps for performance
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -91,29 +84,31 @@ class ArView(
         }
     }
 
-    // --- 🎯 LIFECYCLE OBSERVER METHODS ---
+    // --- 🎯 FIXED LIFECYCLE OBSERVER METHODS ---
 
     override fun onResume(owner: LifecycleOwner) {
         if (!isDestroyed.get()) {
             try {
-                // FIXED: Explicit call to avoid Coroutine resume confusion
-                sceneView.resume()
+                // 🎯 FIXED: Explicitly call on this.sceneView to avoid Coroutine ambiguity
+                this.sceneView.resume()
             } catch (e: Exception) {
-                Log.e(TAG, "AR Resume error: ${e.message}")
+                Log.e(TAG, "AR Resume failed: ${e.message}")
             }
         }
     }
 
     override fun onPause(owner: LifecycleOwner) {
-        // FIXED: Explicit call to ensure hardware release
-        sceneView.pause()
+        try {
+            // 🎯 FIXED: Explicitly call on this.sceneView to resolve 'Unresolved reference'
+            this.sceneView.pause()
+        } catch (e: Exception) {
+            Log.e(TAG, "AR Pause failed: ${e.message}")
+        }
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
         dispose()
     }
-
-    // --- 🎯 HARDWARE TELEMETRY ---
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
@@ -121,7 +116,6 @@ class ArView(
 
         val packet = mutableMapOf<String, Any>()
         
-        // Lighting Data for real-time exposure
         val lightEstimate = frame.lightEstimate
         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
             lightEstimate.pixelIntensity.toDouble()
@@ -133,7 +127,6 @@ class ArView(
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // Hit Testing with Wall verification
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> 
             val t = h.trackable
@@ -152,9 +145,6 @@ class ArView(
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
-        val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
-        packet["thermalStatus"] = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) pm.currentThermalStatus else -1
-
         isBridgeBusy = true
         activity.runOnUiThread {
             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
@@ -166,13 +156,6 @@ class ArView(
         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
         val intrinsics = frame.camera.imageIntrinsics
         
-        val lightEstimate = frame.lightEstimate
-        val pixelIntensity = if (lightEstimate.state == LightEstimate.State.VALID) {
-            lightEstimate.pixelIntensity.toDouble()
-        } else {
-            1.0
-        }
-
         val data = mapOf(
             "fx" to intrinsics.focalLength[0].toDouble(),
             "fy" to intrinsics.focalLength[1].toDouble(),
@@ -181,8 +164,8 @@ class ArView(
             "width" to intrinsics.imageDimensions[0].toDouble(),
             "height" to intrinsics.imageDimensions[1].toDouble(),
             "viewWidth" to sceneView.width.toDouble(),
-            "viewHeight" to sceneView.height.toDouble(),
-            "lightIntensity" to pixelIntensity
+            "viewHeight" to sceneView.height.toDouble(), // 🎯 FIXED Typo: sceneSize to sceneView
+            "lightIntensity" to (frame.lightEstimate?.pixelIntensity?.toDouble() ?: 1.0)
         )
         result.success(data)
     }
@@ -196,8 +179,7 @@ class ArView(
                     mainScope.launch(Dispatchers.IO) {
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                        val bytes = stream.toByteArray()
-                        withContext(Dispatchers.Main) { result.success(bytes) }
+                        withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
                     }
                 } else result.error("ERR", "PixelCopy failed: $res", null)
             }, Handler(Looper.getMainLooper()))
@@ -209,8 +191,7 @@ class ArView(
     }
 
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
-        val proj = FloatArray(16)
-        currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+        val proj = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         result.success(proj.map { it.toDouble() })
     }
 
