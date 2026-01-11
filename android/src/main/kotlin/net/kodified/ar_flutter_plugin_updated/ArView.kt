@@ -47,7 +47,7 @@ class ArView(
         sceneView.apply {
             this.lifecycle = activityLifecycle
             
-            // 🎯 KILL THE DOTS: Disable both Plane grid and Feature Point renderer
+            // 🎯 KEEP DOTS REMOVED
             this.planeRenderer.isVisible = false
             this.planeRenderer.isEnabled = false
             
@@ -82,7 +82,6 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // Gate to 20fps for stability
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -92,7 +91,6 @@ class ArView(
 
     private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
         val showPlanes = call.argument<Boolean>("showPlanes") ?: false
-        // 🎯 Re-confirming dots are hidden based on Flutter init call
         sceneView.planeRenderer.isVisible = showPlanes
         result.success(null)
     }
@@ -113,22 +111,19 @@ class ArView(
             return
         }
 
-        // Feature Point Count (Required for UI logic)
+        // 🎯 Feature Point count for UI quality indicator
         val pc = frame.acquirePointCloud()
         packet["featureCount"] = pc.points.remaining() / 4
         pc.release()
 
-        // Light Estimation
         packet["lightIntensity"] = frame.lightEstimate?.let { if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 } ?: 1.0
 
-        // Projection & Camera Data
         val camPose = camera.displayOrientedPose
         val camArr = FloatArray(16); camPose.toMatrix(camArr, 0)
         packet["cameraPose"] = camArr.map { it.toDouble() }
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-        // 🎯 ANGLE FIX: Perform Hit Test and ensure 'worldPosition' is sent
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> h.trackable is Plane } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
 
@@ -136,26 +131,22 @@ class ArView(
             val hp = bestHit.hitPose
             val hpArr = FloatArray(16); hp.toMatrix(hpArr, 0)
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
-            
-            // 🎯 CRITICAL: This key is required by your ViewModel's attachEngine method
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
             
-            val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
+            val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2.0f) + (hp.ty()-camera.pose.ty()).pow(2.0f) + (hp.tz()-camera.pose.tz()).pow(2.0f)).toDouble()
             packet["distance"] = dist
             
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
-            packet["wallTilt"] = 90.0 - (acos(abs(bestHit.hitPose.yAxis[1]).toDouble()) * (180.0 / PI))
+            packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
         } else {
-            // 🎯 FALLBACK: Use Device Pitch if no wall is hit
-            // This keeps the UI responsive during search
-            val cameraEuler = FloatArray(3)
-            // Extract rotation from camera pose
-            val quaternion = camera.displayOrientedPose.extractQuaternion()
-            // Simple Pitch calculation (X-axis rotation)
-            val pitch = atan2(2.0 * (quaternion[3] * quaternion[0] + quaternion[1] * quaternion[2]), 
-                            1.0 - 2.0 * (quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1]))
+            // 🎯 FIXED FALLBACK: Built-in Pose rotation extraction
+            val q = camPose.rotationQuaternion // [x, y, z, w]
+            val pitch = atan2(
+                2.0 * (q[3].toDouble() * q[0].toDouble() + q[1].toDouble() * q[2].toDouble()),
+                1.0 - 2.0 * (q[0].toDouble() * q[0].toDouble() + q[1].toDouble() * q[1].toDouble())
+            )
             packet["wallTilt"] = pitch * (180.0 / PI)
             packet["hitType"] = "SEARCHING"
         }
@@ -220,6 +211,8 @@ class ArView(
         sceneView.destroy()
     }
 }
+
+
 
 // package net.kodified.ar_flutter_plugin_updated
 
