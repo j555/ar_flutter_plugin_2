@@ -1,4 +1,3 @@
-// android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArViewFactory.kt
 package net.kodified.ar_flutter_plugin_updated
 
 import android.content.Context
@@ -8,6 +7,7 @@ import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 
 class ArViewFactory(
     private val messenger: BinaryMessenger,
@@ -18,7 +18,6 @@ class ArViewFactory(
         val lifecycle = plugin.getLifecycle()
         val activity = plugin.getActivity()
 
-        // 🎯 Fallback: If the plugin hasn't attached to activity yet, use context
         val finalActivity = activity ?: (context as? Activity)
             ?: throw IllegalStateException("ARView requires an Activity context")
             

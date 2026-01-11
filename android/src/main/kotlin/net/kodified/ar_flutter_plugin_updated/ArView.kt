@@ -4,12 +4,14 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.*
-import android.util.Log
 import android.view.*
 import android.widget.FrameLayout
-import androidx.lifecycle.*
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import com.google.ar.core.*
-import io.flutter.plugin.common.*
+import io.flutter.plugin.common.BinaryMessenger
+import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.scene.PlaneRenderer
@@ -23,11 +25,10 @@ class ArView(
     private val id: Int,
     private val activityLifecycle: Lifecycle,
     private val activity: Activity,
-) : PlatformView, LifecycleOwner, LifecycleEventObserver {
+) : PlatformView, DefaultLifecycleObserver {
 
     private val TAG: String = "ArView_Native"
     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
-    private val lifecycleRegistry = LifecycleRegistry(this)
     private val rootLayout: ViewGroup = FrameLayout(context)
     private val sceneView: ARSceneView = ARSceneView(context, null)
     
@@ -39,26 +40,24 @@ class ArView(
     private var lastFrameTime: Long = 0
     private var currentArFrame: Frame? = null 
 
-    // Point Cloud Features restored from old code
     private var showPointCloud = false
 
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override fun getView(): View = rootLayout 
-
     init {
-        lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        // 🎯 SMOOTH STARTUP: Subscribe to lifecycle events immediately
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
-            lifecycle = lifecycleRegistry
+            // Link SceneView directly to the Activity lifecycle provided by the bridge
+            lifecycle = activityLifecycle
             planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
+            
             sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
-                    // Restore high-quality lighting from old code
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                    
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
@@ -85,7 +84,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // Gate to ~20fps to ensure the Pixel 7 remains stable during heavy math
+            // 🎯 TELEMETRY GATE: Ensure consistent ~20fps for Flutter updates
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -93,13 +92,36 @@ class ArView(
         }
     }
 
+    // --- 🎯 LIFECYCLE OBSERVER METHODS ---
+
+    override fun onResume(owner: LifecycleOwner) {
+        if (!isDestroyed.get()) {
+            try {
+                sceneView.resume()
+            } catch (e: Exception) {
+                Log.e(TAG, "Resume failed: ${e.message}")
+            }
+        }
+    }
+
+    override fun onPause(owner: LifecycleOwner) {
+        // Release hardware immediately to prevent heat/battery drain
+        sceneView.pause()
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        dispose()
+    }
+
+    // --- 🎯 HARDWARE TELEMETRY ---
+
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
         if (camera.trackingState != TrackingState.TRACKING) return
 
         val packet = mutableMapOf<String, Any>()
         
-        // 🎯 1. LIGHT INTENSITY (Integrated here)
+        // Lighting Data for real-time exposure adjustment
         val lightEstimate = frame.lightEstimate
         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
             lightEstimate.pixelIntensity.toDouble()
@@ -111,12 +133,11 @@ class ArView(
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // 🎯 2. HIT TEST WITH FALLBACKS (Restored from old code)
+        // Hit Testing with Plane verification
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        // prioritize verified Planes, then DepthPoints, then Instant Placement
         val bestHit = hits.firstOrNull { h -> 
             val t = h.trackable
-            (t is Plane && t.isPoseInPolygon(h.hitPose)) // Ensure it's on the actual wall
+            (t is Plane && t.isPoseInPolygon(h.hitPose))
         } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
 
         if (bestHit != null) {
@@ -131,7 +152,7 @@ class ArView(
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
-        // Thermal Monitoring for Pixel 7
+        // Monitoring thermal state (critical for high-end devices like Pixel 7/8/9)
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
         packet["thermalStatus"] = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) pm.currentThermalStatus else -1
 
@@ -146,7 +167,6 @@ class ArView(
         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
         val intrinsics = frame.camera.imageIntrinsics
         
-        // 🎯 3. LIGHT INTENSITY FOR DATABASE (Integrated here)
         val lightEstimate = frame.lightEstimate
         val pixelIntensity = if (lightEstimate.state == LightEstimate.State.VALID) {
             lightEstimate.pixelIntensity.toDouble()
@@ -163,12 +183,11 @@ class ArView(
             "height" to intrinsics.imageDimensions[1].toDouble(),
             "viewWidth" to sceneView.width.toDouble(),
             "viewHeight" to sceneView.height.toDouble(),
-            "lightIntensity" to pixelIntensity // ✅ Added for DB storage
+            "lightIntensity" to pixelIntensity
         )
         result.success(data)
     }
 
-    // Snapshot remains strictly focused on PixelCopy for performance
     private fun handleSnapshot(result: MethodChannel.Result) {
         if (sceneView.width <= 0 || sceneView.height <= 0) return result.error("ERR", "Invalid View", null)
         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
@@ -178,7 +197,8 @@ class ArView(
                     mainScope.launch(Dispatchers.IO) {
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                        withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+                        val bytes = stream.toByteArray()
+                        withContext(Dispatchers.Main) { result.success(bytes) }
                     }
                 } else result.error("ERR", "PixelCopy failed: $res", null)
             }, Handler(Looper.getMainLooper()))
@@ -198,19 +218,232 @@ class ArView(
         val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
     }
 
+    override fun getView(): View = rootLayout
+
     override fun dispose() {
         if (isDestroyed.getAndSet(true)) return
+        activityLifecycle.removeObserver(this)
         mainScope.cancel()
         sceneView.destroy()
     }
-
-    override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) {
-        if (!isDestroyed.get()) {
-            if (e == Lifecycle.Event.ON_DESTROY) dispose()
-            else lifecycleRegistry.handleLifecycleEvent(e)
-        }
-    }
 }
+
+
+
+
+// package net.kodified.ar_flutter_plugin_updated
+
+// import android.app.Activity
+// import android.content.Context
+// import android.graphics.Bitmap
+// import android.os.*
+// import android.util.Log
+// import android.view.*
+// import android.widget.FrameLayout
+// import androidx.lifecycle.*
+// import com.google.ar.core.*
+// import io.flutter.plugin.common.*
+// import io.flutter.plugin.platform.PlatformView
+// import io.github.sceneview.ar.ARSceneView
+// import io.github.sceneview.ar.scene.PlaneRenderer
+// import kotlinx.coroutines.*
+// import java.util.concurrent.atomic.AtomicBoolean
+// import kotlin.math.*
+
+// class ArView(
+//     context: Context,
+//     private val messenger: BinaryMessenger,
+//     private val id: Int,
+//     private val activityLifecycle: Lifecycle,
+//     private val activity: Activity,
+// ) : PlatformView, LifecycleOwner, LifecycleEventObserver {
+
+//     private val TAG: String = "ArView_Native"
+//     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
+//     private val lifecycleRegistry = LifecycleRegistry(this)
+//     private val rootLayout: ViewGroup = FrameLayout(context)
+//     private val sceneView: ARSceneView = ARSceneView(context, null)
+    
+//     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    
+//     private val isDestroyed = AtomicBoolean(false)
+//     private var isCenterHitTrackingEnabled = false
+//     private var isBridgeBusy = false
+//     private var lastFrameTime: Long = 0
+//     private var currentArFrame: Frame? = null 
+
+//     // Point Cloud Features restored from old code
+//     private var showPointCloud = false
+
+//     override val lifecycle: Lifecycle get() = lifecycleRegistry
+//     override fun getView(): View = rootLayout 
+
+//     init {
+//         lifecycleRegistry.currentState = Lifecycle.State.CREATED
+//         activityLifecycle.addObserver(this)
+        
+//         sceneView.apply {
+//             lifecycle = lifecycleRegistry
+//             planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
+//             sessionConfiguration = { session, config ->
+//                 config.apply {
+//                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+//                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+//                     focusMode = Config.FocusMode.AUTO
+//                     // Restore high-quality lighting from old code
+//                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+//                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+//                         depthMode = Config.DepthMode.AUTOMATIC
+//                     }
+//                 }
+//             }
+//         }
+//         rootLayout.addView(sceneView)
+
+//         sessionChannel.setMethodCallHandler { call, result ->
+//             if (isDestroyed.get()) return@setMethodCallHandler
+//             when (call.method) {
+//                 "init" -> result.success(null)
+//                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
+//                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
+//                 "showPointCloud" -> { showPointCloud = true; result.success(null) }
+//                 "hidePointCloud" -> { showPointCloud = false; result.success(null) }
+//                 "snapshot" -> handleSnapshot(result)
+//                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
+//                 "getCameraPose" -> handleGetCameraPose(result)
+//                 "getProjectionMatrix" -> handleGetProjectionMatrix(result)
+//                 else -> result.notImplemented()
+//             }
+//         }
+
+//         sceneView.onSessionUpdated = { _, frame ->
+//             currentArFrame = frame
+//             // Gate to ~20fps to ensure the Pixel 7 remains stable during heavy math
+//             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
+//                 lastFrameTime = System.currentTimeMillis()
+//                 broadcastHardwareTelemetry(frame)
+//             }
+//         }
+//     }
+
+//     private fun broadcastHardwareTelemetry(frame: Frame) {
+//         val camera = frame.camera
+//         if (camera.trackingState != TrackingState.TRACKING) return
+
+//         val packet = mutableMapOf<String, Any>()
+        
+//         // 🎯 1. LIGHT INTENSITY (Integrated here)
+//         val lightEstimate = frame.lightEstimate
+//         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
+//             lightEstimate.pixelIntensity.toDouble()
+//         } else {
+//             1.0
+//         }
+
+//         packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+//         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+//         packet["projectionMatrix"] = proj.map { it.toDouble() }
+
+//         // 🎯 2. HIT TEST WITH FALLBACKS (Restored from old code)
+//         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+//         // prioritize verified Planes, then DepthPoints, then Instant Placement
+//         val bestHit = hits.firstOrNull { h -> 
+//             val t = h.trackable
+//             (t is Plane && t.isPoseInPolygon(h.hitPose)) // Ensure it's on the actual wall
+//         } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
+
+//         if (bestHit != null) {
+//             val hp = bestHit.hitPose
+//             packet["hit"] = mapOf("transform" to matrixToArray(hp))
+//             val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
+//             packet["distance"] = dist
+            
+//             val normalY = abs(hp.yAxis[1])
+//             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
+//             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
+//             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
+//         }
+
+//         // Thermal Monitoring for Pixel 7
+//         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
+//         packet["thermalStatus"] = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) pm.currentThermalStatus else -1
+
+//         isBridgeBusy = true
+//         activity.runOnUiThread {
+//             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+//             isBridgeBusy = false
+//         }
+//     }
+
+//     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+//         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
+//         val intrinsics = frame.camera.imageIntrinsics
+        
+//         // 🎯 3. LIGHT INTENSITY FOR DATABASE (Integrated here)
+//         val lightEstimate = frame.lightEstimate
+//         val pixelIntensity = if (lightEstimate.state == LightEstimate.State.VALID) {
+//             lightEstimate.pixelIntensity.toDouble()
+//         } else {
+//             1.0
+//         }
+
+//         val data = mapOf(
+//             "fx" to intrinsics.focalLength[0].toDouble(),
+//             "fy" to intrinsics.focalLength[1].toDouble(),
+//             "cx" to intrinsics.principalPoint[0].toDouble(),
+//             "cy" to intrinsics.principalPoint[1].toDouble(),
+//             "width" to intrinsics.imageDimensions[0].toDouble(),
+//             "height" to intrinsics.imageDimensions[1].toDouble(),
+//             "viewWidth" to sceneView.width.toDouble(),
+//             "viewHeight" to sceneView.height.toDouble(),
+//             "lightIntensity" to pixelIntensity // ✅ Added for DB storage
+//         )
+//         result.success(data)
+//     }
+
+//     // Snapshot remains strictly focused on PixelCopy for performance
+//     private fun handleSnapshot(result: MethodChannel.Result) {
+//         if (sceneView.width <= 0 || sceneView.height <= 0) return result.error("ERR", "Invalid View", null)
+//         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+//         try {
+//             PixelCopy.request(sceneView, bitmap, { res ->
+//                 if (res == PixelCopy.SUCCESS) {
+//                     mainScope.launch(Dispatchers.IO) {
+//                         val stream = java.io.ByteArrayOutputStream()
+//                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+//                         withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+//                     }
+//                 } else result.error("ERR", "PixelCopy failed: $res", null)
+//             }, Handler(Looper.getMainLooper()))
+//         } catch (e: Exception) { result.error("ERR", e.message, null) }
+//     }
+
+//     private fun handleGetCameraPose(result: MethodChannel.Result) {
+//         currentArFrame?.camera?.displayOrientedPose?.let { p -> result.success(matrixToArray(p)) } ?: result.error("ERR", "No pose", null)
+//     }
+
+//     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+//         val proj = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+//         result.success(proj.map { it.toDouble() })
+//     }
+
+//     private fun matrixToArray(p: Pose): List<Double> {
+//         val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
+//     }
+
+//     override fun dispose() {
+//         if (isDestroyed.getAndSet(true)) return
+//         mainScope.cancel()
+//         sceneView.destroy()
+//     }
+
+//     override fun onStateChanged(s: LifecycleOwner, e: Lifecycle.Event) {
+//         if (!isDestroyed.get()) {
+//             if (e == Lifecycle.Event.ON_DESTROY) dispose()
+//             else lifecycleRegistry.handleLifecycleEvent(e)
+//         }
+//     }
+// }
 
 
 

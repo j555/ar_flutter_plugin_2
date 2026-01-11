@@ -1,13 +1,13 @@
-// android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArFlutterPlugin.kt
 package net.kodified.ar_flutter_plugin_updated
 
+import android.app.Activity
 import androidx.annotation.NonNull
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleRegistry
-import android.app.Activity
 
 class ArFlutterPlugin: FlutterPlugin, ActivityAware {
     private var lifecycle: LifecycleRegistry? = null
@@ -22,10 +22,9 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {}
 
-    // 🎯 ROBUST LIFECYCLE BRIDGE: Works on all devices without Unresolved Reference errors
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
-        // Use the activity directly if it's a LifecycleOwner (which FlutterActivity is)
+        // 🎯 Safely extract the lifecycle from the activity
         if (activity is LifecycleOwner) {
             lifecycle = (activity as LifecycleOwner).lifecycle as? LifecycleRegistry
         }
@@ -34,15 +33,11 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
     fun getLifecycle(): Lifecycle? = lifecycle
     fun getActivity(): Activity? = activity
 
-    override fun onDetachedFromActivityForConfigChanges() { 
-        activity = null
-    }
+    override fun onDetachedFromActivityForConfigChanges() { activity = null }
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
         activity = binding.activity
     }
-    override fun onDetachedFromActivity() { 
-        activity = null
-    }
+    override fun onDetachedFromActivity() { activity = null }
 }
 
 
