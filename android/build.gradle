@@ -36,6 +36,12 @@ android {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
     
+    // LIFECYCLE FIX: Added to resolve 'Unresolved reference' errors
+    // These allow the ArView to stay in sync with the Activity state
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.6.1"
+    implementation "androidx.lifecycle:lifecycle-common-java8:2.6.1"
+    implementation "androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.1"
+
     // Explicit dependencies to fix linking errors
     api 'io.github.sceneview:arsceneview:2.3.1'
     api 'com.google.ar:core:1.51.0'
