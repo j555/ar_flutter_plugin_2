@@ -46,9 +46,10 @@ class ArView(
         
         sceneView.apply {
             this.lifecycle = activityLifecycle
-            // 🎯 DOTS REMOVED BY DEFAULT
-            planeRenderer.isVisible = false 
-            planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
+            
+            // 🎯 KILL THE DOTS: Disable both Plane grid and Feature Point renderer
+            this.planeRenderer.isVisible = false
+            this.planeRenderer.isEnabled = false
             
             this.sessionConfiguration = { session, config ->
                 config.apply {
@@ -68,7 +69,6 @@ class ArView(
         sessionChannel.setMethodCallHandler { call, result ->
             if (isDestroyed.get()) return@setMethodCallHandler
             when (call.method) {
-                // 🎯 FIXED: Actually process the init arguments from Flutter
                 "init" -> handleInit(call, result)
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
@@ -82,6 +82,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
+            // Gate to 20fps for stability
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -91,7 +92,7 @@ class ArView(
 
     private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
         val showPlanes = call.argument<Boolean>("showPlanes") ?: false
-        // This is what removes the surface dots
+        // 🎯 Re-confirming dots are hidden based on Flutter init call
         sceneView.planeRenderer.isVisible = showPlanes
         result.success(null)
     }
@@ -112,34 +113,32 @@ class ArView(
             return
         }
 
-        // Feature Point Tracking Quality
-        try {
-            frame.acquirePointCloud()?.use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4
-            }
-        } catch (e: Exception) { packet["featureCount"] = 0 }
+        // Feature Point Count (Required for UI logic)
+        val pc = frame.acquirePointCloud()
+        packet["featureCount"] = pc.points.remaining() / 4
+        pc.release()
 
-        val lightEstimate = frame.lightEstimate
-        packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
-            lightEstimate.pixelIntensity.toDouble()
-        } else {
-            1.0
-        }
+        // Light Estimation
+        packet["lightIntensity"] = frame.lightEstimate?.let { if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 } ?: 1.0
 
-        packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+        // Projection & Camera Data
+        val camPose = camera.displayOrientedPose
+        val camArr = FloatArray(16); camPose.toMatrix(camArr, 0)
+        packet["cameraPose"] = camArr.map { it.toDouble() }
         val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-        // 🎯 PERMISSIVE HIT TEST: Use 'trackable is Plane' instead of 'isPoseInPolygon'
-        // This ensures the angle/distance displays immediately during scan
+        // 🎯 ANGLE FIX: Perform Hit Test and ensure 'worldPosition' is sent
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        val bestHit = hits.firstOrNull { h -> h.trackable is Plane }
-            ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
+        val bestHit = hits.firstOrNull { h -> h.trackable is Plane } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
             val hpArr = FloatArray(16); hp.toMatrix(hpArr, 0)
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
+            
+            // 🎯 CRITICAL: This key is required by your ViewModel's attachEngine method
+            packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
             
             val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
             packet["distance"] = dist
@@ -186,6 +185,10 @@ class ArView(
         }, Handler(Looper.getMainLooper()))
     }
 
+    private fun matrixToArray(p: Pose): List<Double> {
+        val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
+    }
+
     private fun handleGetCameraPose(result: MethodChannel.Result) {
         currentArFrame?.camera?.displayOrientedPose?.let { p -> 
             val m = FloatArray(16); p.toMatrix(m, 0); result.success(m.map { it.toDouble() })
@@ -195,10 +198,6 @@ class ArView(
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
         val proj = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         result.success(proj.map { it.toDouble() })
-    }
-
-    private fun matrixToArray(p: Pose): List<Double> {
-        val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
     }
 
     override fun getView(): View = rootLayout
