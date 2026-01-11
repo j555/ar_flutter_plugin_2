@@ -101,7 +101,7 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        val packet = mutableMapOf<String, Any?>() // Keep this as Any? for now
+        val packet = mutableMapOf<String, Any?>()
 
         // 1. Core Status Data
         packet["trackingState"] = camera.trackingState.name
@@ -152,17 +152,23 @@ class ArView(
             val dz = hp.tz() - camPose.tz()
             packet["distance"] = sqrt(dx * dx + dy * dy + dz * dz).toDouble()
 
-            
-            packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["wallNormal"] = listOf(planeNormal[0].toDouble(), planeNormal[1].toDouble(), planeNormal[2].toDouble())
-            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+            // Extract Normal from HitPose Y-Axis (Column 1: indices 4, 5, 6)
+            val normalX = hpArr[4].toDouble()
+            val normalY = hpArr[5].toDouble()
+            val normalZ = hpArr[6].toDouble()
 
             val wallNormalX = planeNormal[0].toDouble()
             val wallNormalZ = planeNormal[2].toDouble()
             val q = camPose.rotationQuaternion
+            packet["hitType"] = if (abs(normalY) < 0.5) "VERTICAL" else "HORIZONTAL"
+            packet["wallNormal"] = listOf(normalX, normalY, normalZ)
             
             // 🎯 FIX 2: Convert quaternion components to Double for math functions
-            val qw = q[3].toDouble()
+            val clampedNormalY = abs(normalY).coerceIn(0.0, 1.0)
+            packet["wallTilt"] = 90.0 - (acos(clampedNormalY) * (180.0 / PI))
+            
+            // Angle: Bearing of the Normal
+            packet["wallAngle"] = atan2(normalX, normalZ) * (180.0 / PI)
 
             // Tilt (Pitch) of the camera
             val pitch = atan2(2.0 * (qy * qz + qx * qw), qx * qx - qy * qy - qz * qz + qw * qw)
@@ -173,9 +179,22 @@ class ArView(
             packet["wallAngle"] = yaw * (180.0 / PI)
 
             // Set other hit-related values to null
+        } else {
+            // SEARCHING STATE
+            packet["hitType"] = "SEARCHING"
             packet["distance"] = null
             packet["wallNormal"] = null
             packet["worldPosition"] = null
+
+            // Use Camera Z-axis (Indices 8, 9, 10) as "Virtual Normal"
+            val camNormalX = camArr[8].toDouble()
+            val camNormalY = camArr[9].toDouble()
+            val camNormalZ = camArr[10].toDouble()
+            
+            val clampedCamY = abs(camNormalY).coerceIn(0.0, 1.0)
+            packet["wallTilt"] = 90.0 - (acos(clampedCamY) * (180.0 / PI))
+            
+            packet["wallAngle"] = atan2(camNormalX, camNormalZ) * (180.0 / PI)
         }
 
         // 🎯 FIX 1 (Applied again): Filter out nulls before sending
