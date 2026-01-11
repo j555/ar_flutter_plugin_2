@@ -158,8 +158,16 @@ class ArView(
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
             
-            // 🎯 FIXED TILT: Hardware-based wall pitch
-            packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
+            // 🎯 FIXED TILT (Vertical Pitch) with NaN Guard
+            // We clamp to 0.9999 to ensure acos never produces NaN
+            val normalY = abs(hp.yAxis[1]).toDouble().coerceIn(-0.9999, 0.9999)
+            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+
+            // 🎯 NEW: WALL ANGLE (Horizontal Alignment)
+            // Calculates how "square" the phone is to the wall surface
+            val normalX = hp.zAxis[0].toDouble()
+            val normalZ = hp.zAxis[2].toDouble()
+            packet["wallAngle"] = atan2(normalX, normalZ) * (180.0 / PI)
         } else {
             // 6. 🎯 FALLBACK: Device Pitch (Uses the phone's internal gyro if no wall is hit)
             val q = camPose.rotationQuaternion // [x, y, z, w]
@@ -168,6 +176,7 @@ class ArView(
                 1.0 - 2.0 * (q[0].toDouble() * q[0].toDouble() + q[1].toDouble() * q[1].toDouble())
             )
             packet["wallTilt"] = pitch * (180.0 / PI)
+            packet["wallAngle"] = 0.0
             packet["hitType"] = "SEARCHING"
         }
 
