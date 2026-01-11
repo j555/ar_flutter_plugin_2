@@ -146,7 +146,18 @@ class ArView(
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
-            packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
+            packet["wallTilt"] = 90.0 - (acos(abs(bestHit.hitPose.yAxis[1]).toDouble()) * (180.0 / PI))
+        } else {
+            // 🎯 FALLBACK: Use Device Pitch if no wall is hit
+            // This keeps the UI responsive during search
+            val cameraEuler = FloatArray(3)
+            // Extract rotation from camera pose
+            val quaternion = camera.displayOrientedPose.extractQuaternion()
+            // Simple Pitch calculation (X-axis rotation)
+            val pitch = atan2(2.0 * (quaternion[3] * quaternion[0] + quaternion[1] * quaternion[2]), 
+                            1.0 - 2.0 * (quaternion[0] * quaternion[0] + quaternion[1] * quaternion[1]))
+            packet["wallTilt"] = pitch * (180.0 / PI)
+            packet["hitType"] = "SEARCHING"
         }
 
         sendTelemetryPacket(packet)
