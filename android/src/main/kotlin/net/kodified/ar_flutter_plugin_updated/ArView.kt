@@ -91,20 +91,21 @@ class ArView(
     override fun onResume(owner: LifecycleOwner) {
         if (!isDestroyed.get()) {
             try {
-                // Call the specific SceneView resume, avoiding Coroutine conflict
-                this.sceneView.run { resume() }
+                // We cast to the base SceneView class to ensure we call the 
+                // hardware resume() and not the Coroutine continuation.resume()
+                (sceneView as io.github.sceneview.SceneView).resume()
             } catch (e: Exception) {
-                Log.e(TAG, "Hardware resume error: ${e.message}")
+                Log.e(TAG, "AR hardware resume error: ${e.message}")
             }
         }
     }
 
     override fun onPause(owner: LifecycleOwner) {
         try {
-            // Call the specific SceneView pause
-            this.sceneView.run { pause() }
+            // We cast to the base SceneView class to resolve "Unresolved reference 'pause'"
+            (sceneView as io.github.sceneview.SceneView).pause()
         } catch (e: Exception) {
-            Log.e(TAG, "Hardware pause error: ${e.message}")
+            Log.e(TAG, "AR hardware pause error: ${e.message}")
         }
     }
 
