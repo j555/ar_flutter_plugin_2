@@ -85,30 +85,6 @@ class ArView(
         }
     }
 
-    // --- 🎯 THE "NO-AMBIGUITY" LIFECYCLE FIX ---
-    // We use qualified calls to ensure the compiler doesn't use Coroutine "resume"
-
-    override fun onResume(owner: LifecycleOwner) {
-        if (!isDestroyed.get()) {
-            try {
-                // We cast to the base SceneView class to ensure we call the 
-                // hardware resume() and not the Coroutine continuation.resume()
-                (sceneView as io.github.sceneview.SceneView).resume()
-            } catch (e: Exception) {
-                Log.e(TAG, "AR hardware resume error: ${e.message}")
-            }
-        }
-    }
-
-    override fun onPause(owner: LifecycleOwner) {
-        try {
-            // We cast to the base SceneView class to resolve "Unresolved reference 'pause'"
-            (sceneView as io.github.sceneview.SceneView).pause()
-        } catch (e: Exception) {
-            Log.e(TAG, "AR hardware pause error: ${e.message}")
-        }
-    }
-
     override fun onDestroy(owner: LifecycleOwner) {
         dispose()
     }
