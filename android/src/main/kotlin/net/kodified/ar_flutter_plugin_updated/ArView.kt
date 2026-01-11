@@ -103,69 +103,53 @@ class ArView(
         val packet = mutableMapOf<String, Any?>()
 
         packet["trackingState"] = camera.trackingState.name
-        packet["trackingFailureReason"] = camera.trackingFailureReason.name
-
         if (camera.trackingState != TrackingState.TRACKING) {
             sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
             return
         }
 
-        // Feature Count
-        try {
-            frame.acquirePointCloud().use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4
-            }
-        } catch (e: Exception) { packet["featureCount"] = 0 }
+        // 1. Point Cloud & Light (Restored)
+        try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
+        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
 
-        // Light & Matrices
-        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }
-            ?.pixelIntensity?.toDouble() ?: 1.0
-
+        // 2. Camera Orientation (The core of the fix)
         val camPose = camera.displayOrientedPose
-        val camArr = FloatArray(16).also { camPose.toMatrix(it, 0) }
-        packet["cameraPose"] = camArr.map { it.toDouble() }
-
-        val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
-        packet["projectionMatrix"] = projArr.map { it.toDouble() }
-
-        // 🎯 QUATERNION DATA (Unified for both paths)
         val q = camPose.rotationQuaternion
-        val qX = q[0].toDouble()
-        val qY = q[1].toDouble()
-        val qZ = q[2].toDouble()
-        val qW = q[3].toDouble()
+        val qX = q[0].toDouble(); val qY = q[1].toDouble(); val qZ = q[2].toDouble(); val qW = q[3].toDouble()
 
+        // 🎯 RELATIVE TILT: Phone's pitch relative to gravity (Always active)
+        val pitch = atan2(2.0 * (qY * qZ + qX * qW), qX * qX - qY * qY - qZ * qZ + qW * qW)
+        val phoneTilt = pitch * (180.0 / PI)
+        packet["wallTilt"] = phoneTilt 
+
+        // 3. Hit Test Logic
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
-            val hpArr = FloatArray(16).also { hp.toMatrix(it, 0) }
-            packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
+            packet["hitType"] = if (abs(hp.yAxis[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
 
-            val dx = hp.tx() - camPose.tx()
-            val dy = hp.ty() - camPose.ty()
-            val dz = hp.tz() - camPose.tz()
-            packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
-
-            // Wall Normal logic
-            val trackable = bestHit.trackable
-            val nArr = if (trackable is Plane) trackable.centerPose.yAxis else hp.yAxis
-            val normalY = abs(nArr[1]).toDouble().coerceIn(0.0, 0.9999)
+            // 🎯 RELATIVE ANGLE: Phone's heading vs Wall Normal
+            // We compare the phone's forward vector to the wall's normal vector
+            val camYaw = atan2(2.0 * (qY * qW - qX * qZ), qX * qX - qY * qY + qZ * qZ - qW * qW)
+            val wallNormalX = hp.zAxis[0].toDouble()
+            val wallNormalZ = hp.zAxis[2].toDouble()
+            val wallYaw = atan2(wallNormalX, wallNormalZ)
             
-            packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["wallNormal"] = listOf(nArr[0].toDouble(), nArr[1].toDouble(), nArr[2].toDouble())
-            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
-            packet["wallAngle"] = atan2(nArr[0].toDouble(), nArr[2].toDouble()) * (180.0 / PI)
+            // Calculate the difference (how "square" you are to the wall)
+            var relAngle = (camYaw - wallYaw) * (180.0 / PI)
+            // Normalize to -180 to 180
+            while (relAngle > 180) relAngle -= 360
+            while (relAngle < -180) relAngle += 360
+            packet["wallAngle"] = relAngle
 
         } else {
             packet["hitType"] = "SEARCHING"
-            // 🎯 FALLBACK: Show Device orientation while searching
-            val pitch = atan2(2.0 * (qY * qZ + qX * qW), qX * qX - qY * qY - qZ * qZ + qW * qW)
-            packet["wallTilt"] = pitch * (180.0 / PI)
-            val yaw = atan2(2.0 * (qY * qW - qX * qZ), qX * qX - qY * qY + qZ * qZ - qW * qW)
-            packet["wallAngle"] = yaw * (180.0 / PI)
+            packet["wallAngle"] = 0.0 // No wall, no relative angle
+            packet["distance"] = null
         }
 
         sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
