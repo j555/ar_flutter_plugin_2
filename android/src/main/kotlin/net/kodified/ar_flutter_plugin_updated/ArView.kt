@@ -103,6 +103,7 @@ class ArView(
         val camera = frame.camera
         val packet = mutableMapOf<String, Any>()
 
+        // 1. Core Status Data
         packet["trackingState"] = camera.trackingState.name
         packet["trackingFailureReason"] = camera.trackingFailureReason.name
 
@@ -111,37 +112,56 @@ class ArView(
             return
         }
 
-        // 🎯 Feature Point count for UI quality indicator
-        val pc = frame.acquirePointCloud()
-        packet["featureCount"] = pc.points.remaining() / 4
-        pc.release()
+        // 2. Point Cloud / Feature Count
+        try {
+            val pc = frame.acquirePointCloud()
+            packet["featureCount"] = pc.points.remaining() / 4
+            pc.release()
+        } catch (e: Exception) {
+            packet["featureCount"] = 0
+        }
 
-        packet["lightIntensity"] = frame.lightEstimate?.let { if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 } ?: 1.0
+        // 3. Lighting Data
+        packet["lightIntensity"] = frame.lightEstimate?.let { 
+            if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 
+        } ?: 1.0
 
+        // 4. Matrix & Pose Data
         val camPose = camera.displayOrientedPose
-        val camArr = FloatArray(16); camPose.toMatrix(camArr, 0)
+        val camArr = FloatArray(16)
+        camPose.toMatrix(camArr, 0)
         packet["cameraPose"] = camArr.map { it.toDouble() }
-        val projArr = FloatArray(16); camera.getProjectionMatrix(projArr, 0, 0.1f, 100.0f)
+
+        val projArr = FloatArray(16)
+        camera.getProjectionMatrix(projArr, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
+        // 5. Hit Testing Logic
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> h.trackable is Plane } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
-            val hpArr = FloatArray(16); hp.toMatrix(hpArr, 0)
+            val hpArr = FloatArray(16)
+            hp.toMatrix(hpArr, 0)
+            
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
             
-            val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2.0f) + (hp.ty()-camera.pose.ty()).pow(2.0f) + (hp.tz()-camera.pose.tz()).pow(2.0f)).toDouble()
-            packet["distance"] = dist
+            // 🎯 FIXED MATH: Explicitly using Float for calculations, then converting result to Double
+            val dx = hp.tx() - camera.pose.tx()
+            val dy = hp.ty() - camera.pose.ty()
+            val dz = hp.tz() - camera.pose.tz()
+            packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
             
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
-            packet["wallTilt"] = 90.0 - (acos(abs(hp.yAxis[1]).toDouble()) * (180.0 / PI))
+            
+            // 🎯 FIXED TILT: Hardware-based wall pitch
+            packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         } else {
-            // 🎯 FIXED FALLBACK: Built-in Pose rotation extraction
+            // 6. 🎯 FALLBACK: Device Pitch (Uses the phone's internal gyro if no wall is hit)
             val q = camPose.rotationQuaternion // [x, y, z, w]
             val pitch = atan2(
                 2.0 * (q[3].toDouble() * q[0].toDouble() + q[1].toDouble() * q[2].toDouble()),
