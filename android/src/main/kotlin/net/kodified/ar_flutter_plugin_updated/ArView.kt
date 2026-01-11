@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.*
+import android.util.Log
 import android.view.*
 import android.widget.FrameLayout
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -43,15 +44,15 @@ class ArView(
     private var showPointCloud = false
 
     init {
-        // 🎯 SMOOTH STARTUP: Subscribe to lifecycle events immediately
+        // 🎯 SMOOTH STARTUP: Subscribe to lifecycle events
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
-            // Link SceneView directly to the Activity lifecycle provided by the bridge
-            lifecycle = activityLifecycle
-            planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
+            // Direct binding to activity lifecycle
+            this.lifecycle = activityLifecycle
+            this.planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
             
-            sessionConfiguration = { session, config ->
+            this.sessionConfiguration = { session, config ->
                 config.apply {
                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
@@ -72,8 +73,6 @@ class ArView(
                 "init" -> result.success(null)
                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
-                "showPointCloud" -> { showPointCloud = true; result.success(null) }
-                "hidePointCloud" -> { showPointCloud = false; result.success(null) }
                 "snapshot" -> handleSnapshot(result)
                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
                 "getCameraPose" -> handleGetCameraPose(result)
@@ -84,7 +83,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            // 🎯 TELEMETRY GATE: Ensure consistent ~20fps for Flutter updates
+            // 🎯 TELEMETRY GATE: ~20fps for performance
             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
@@ -97,15 +96,16 @@ class ArView(
     override fun onResume(owner: LifecycleOwner) {
         if (!isDestroyed.get()) {
             try {
+                // FIXED: Explicit call to avoid Coroutine resume confusion
                 sceneView.resume()
             } catch (e: Exception) {
-                Log.e(TAG, "Resume failed: ${e.message}")
+                Log.e(TAG, "AR Resume error: ${e.message}")
             }
         }
     }
 
     override fun onPause(owner: LifecycleOwner) {
-        // Release hardware immediately to prevent heat/battery drain
+        // FIXED: Explicit call to ensure hardware release
         sceneView.pause()
     }
 
@@ -121,7 +121,7 @@ class ArView(
 
         val packet = mutableMapOf<String, Any>()
         
-        // Lighting Data for real-time exposure adjustment
+        // Lighting Data for real-time exposure
         val lightEstimate = frame.lightEstimate
         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
             lightEstimate.pixelIntensity.toDouble()
@@ -133,7 +133,7 @@ class ArView(
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // Hit Testing with Plane verification
+        // Hit Testing with Wall verification
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> 
             val t = h.trackable
@@ -152,7 +152,6 @@ class ArView(
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
-        // Monitoring thermal state (critical for high-end devices like Pixel 7/8/9)
         val pm = activity.getSystemService(Context.POWER_SERVICE) as PowerManager
         packet["thermalStatus"] = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) pm.currentThermalStatus else -1
 
@@ -210,7 +209,8 @@ class ArView(
     }
 
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
-        val proj = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+        val proj = FloatArray(16)
+        currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         result.success(proj.map { it.toDouble() })
     }
 
