@@ -17,7 +17,6 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import io.github.sceneview.ar.ARSceneView
-import io.github.sceneview.ar.scene.PlaneRenderer
 import kotlinx.coroutines.*
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.*
@@ -56,7 +55,6 @@ class ArView(
                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                     focusMode = Config.FocusMode.AUTO
                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
-                    
                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                         depthMode = Config.DepthMode.AUTOMATIC
                     }
@@ -94,62 +92,79 @@ class ArView(
         result.success(null)
     }
 
-    override fun onDestroy(owner: LifecycleOwner) {
-        dispose()
-    }
-
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
         val packet = mutableMapOf<String, Any?>()
 
+        // 1. CORE STATUS & TRACKING
         packet["trackingState"] = camera.trackingState.name
+        packet["trackingFailureReason"] = camera.trackingFailureReason.name
+
         if (camera.trackingState != TrackingState.TRACKING) {
             sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
             return
         }
 
-        // 1. Point Cloud & Light (Restored)
-        try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
-        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
+        // 2. STABILITY METRICS (Feature points & Lighting)
+        try {
+            frame.acquirePointCloud().use { pc ->
+                packet["featureCount"] = pc.points.remaining() / 4
+            }
+        } catch (e: Exception) { packet["featureCount"] = 0 }
 
-        // 2. Camera Orientation (The core of the fix)
+        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }
+            ?.pixelIntensity?.toDouble() ?: 1.0
+
+        // 3. MATRICES (Critical for Coordinate Matching)
         val camPose = camera.displayOrientedPose
-        val q = camPose.rotationQuaternion
-        val qX = q[0].toDouble(); val qY = q[1].toDouble(); val qZ = q[2].toDouble(); val qW = q[3].toDouble()
+        val camMat = FloatArray(16).also { camPose.toMatrix(it, 0) }
+        packet["cameraPose"] = camMat.map { it.toDouble() }
 
-        // 🎯 RELATIVE TILT: Phone's pitch relative to gravity (Always active)
-        val pitch = atan2(2.0 * (qY * qZ + qX * qW), qX * qX - qY * qY - qZ * qZ + qW * qW)
-        val phoneTilt = pitch * (180.0 / PI)
-        packet["wallTilt"] = phoneTilt 
+        val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
+        packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-        // 3. Hit Test Logic
+        // 4. CAMERA FORWARD VECTOR (For Tilt/Angle Fallbacks)
+        val forwardX = -camMat[8].toDouble()
+        val forwardY = -camMat[9].toDouble()
+        val forwardZ = -camMat[10].toDouble()
+        val horizontalDist = sqrt(forwardX * forwardX + forwardZ * forwardZ)
+
+        // 5. HIT TEST LOGIC (Wall Data)
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
 
         if (bestHit != null) {
             val hp = bestHit.hitPose
-            packet["hitType"] = if (abs(hp.yAxis[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
-            packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+            val hpMat = FloatArray(16).also { hp.toMatrix(it, 0) }
+            val normal = hp.yAxis // Correct Plane Normal
 
-            // 🎯 RELATIVE ANGLE: Phone's heading vs Wall Normal
-            // We compare the phone's forward vector to the wall's normal vector
-            val camYaw = atan2(2.0 * (qY * qW - qX * qZ), qX * qX - qY * qY + qZ * qZ - qW * qW)
-            val wallNormalX = hp.zAxis[0].toDouble()
-            val wallNormalZ = hp.zAxis[2].toDouble()
-            val wallYaw = atan2(wallNormalX, wallNormalZ)
+            packet["hit"] = mapOf("transform" to hpMat.map { it.toDouble() })
+            packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+            packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
+            packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
+
+            // 🎯 PRODUCTION-READY TILT: Calculate surface lean relative to gravity
+            val normalY = abs(normal[1]).toDouble().coerceIn(0.0, 0.9999)
+            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+
+            // 🎯 PRODUCTION-READY ANGLE: Relative "Squareness" to the wall
+            val camYaw = atan2(forwardX, forwardZ)
+            val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
+            var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI)
             
-            // Calculate the difference (how "square" you are to the wall)
-            var relAngle = (camYaw - wallYaw) * (180.0 / PI)
-            // Normalize to -180 to 180
             while (relAngle > 180) relAngle -= 360
             while (relAngle < -180) relAngle += 360
             packet["wallAngle"] = relAngle
 
         } else {
+            // SEARCHING STATE: Provide Device Orientation so the UI doesn't freeze or flicker
             packet["hitType"] = "SEARCHING"
-            packet["wallAngle"] = 0.0 // No wall, no relative angle
+            packet["wallTilt"] = atan2(forwardY, horizontalDist) * (180.0 / PI)
+            packet["wallAngle"] = atan2(forwardX, forwardZ) * (180.0 / PI)
             packet["distance"] = null
+            packet["wallNormal"] = null
+            packet["worldPosition"] = null
         }
 
         sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
@@ -188,10 +203,6 @@ class ArView(
         }, Handler(Looper.getMainLooper()))
     }
 
-    private fun matrixToArray(p: Pose): List<Double> {
-        val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
-    }
-
     private fun handleGetCameraPose(result: MethodChannel.Result) {
         currentArFrame?.camera?.displayOrientedPose?.let { p -> 
             val m = FloatArray(16); p.toMatrix(m, 0); result.success(m.map { it.toDouble() })
@@ -204,7 +215,7 @@ class ArView(
     }
 
     override fun getView(): View = rootLayout
-
+    override fun onDestroy(owner: LifecycleOwner) { dispose() }
     override fun dispose() {
         if (isDestroyed.getAndSet(true)) return
         activityLifecycle.removeObserver(this)
@@ -212,6 +223,229 @@ class ArView(
         sceneView.destroy()
     }
 }
+
+
+
+
+
+
+
+
+
+// // android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArView.kt
+// package net.kodified.ar_flutter_plugin_updated
+
+// import android.app.Activity
+// import android.content.Context
+// import android.graphics.Bitmap
+// import android.os.*
+// import android.util.Log
+// import android.view.*
+// import android.widget.FrameLayout
+// import androidx.lifecycle.DefaultLifecycleObserver
+// import androidx.lifecycle.Lifecycle
+// import androidx.lifecycle.LifecycleOwner
+// import com.google.ar.core.*
+// import io.flutter.plugin.common.BinaryMessenger
+// import io.flutter.plugin.common.MethodCall
+// import io.flutter.plugin.common.MethodChannel
+// import io.flutter.plugin.platform.PlatformView
+// import io.github.sceneview.ar.ARSceneView
+// import io.github.sceneview.ar.scene.PlaneRenderer
+// import kotlinx.coroutines.*
+// import java.util.concurrent.atomic.AtomicBoolean
+// import kotlin.math.*
+
+// class ArView(
+//     context: Context,
+//     private val messenger: BinaryMessenger,
+//     private val id: Int,
+//     private val activityLifecycle: Lifecycle,
+//     private val activity: Activity,
+// ) : PlatformView, DefaultLifecycleObserver {
+
+//     private val TAG: String = "ArView_Native"
+//     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
+//     private val rootLayout: ViewGroup = FrameLayout(context)
+//     private val sceneView: ARSceneView = ARSceneView(context, null)
+//     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    
+//     private val isDestroyed = AtomicBoolean(false)
+//     private var isCenterHitTrackingEnabled = false
+//     private var isBridgeBusy = false
+//     private var lastFrameTime: Long = 0
+//     private var currentArFrame: Frame? = null 
+
+//     init {
+//         activityLifecycle.addObserver(this)
+        
+//         sceneView.apply {
+//             this.lifecycle = activityLifecycle
+//             this.planeRenderer.isVisible = false
+//             this.planeRenderer.isEnabled = false
+            
+//             this.sessionConfiguration = { session, config ->
+//                 config.apply {
+//                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+//                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+//                     focusMode = Config.FocusMode.AUTO
+//                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                    
+//                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+//                         depthMode = Config.DepthMode.AUTOMATIC
+//                     }
+//                 }
+//             }
+//         }
+//         rootLayout.addView(sceneView)
+
+//         sessionChannel.setMethodCallHandler { call, result ->
+//             if (isDestroyed.get()) return@setMethodCallHandler
+//             when (call.method) {
+//                 "init" -> handleInit(call, result)
+//                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
+//                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
+//                 "snapshot" -> handleSnapshot(result)
+//                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
+//                 "getCameraPose" -> handleGetCameraPose(result)
+//                 "getProjectionMatrix" -> handleGetProjectionMatrix(result)
+//                 else -> result.notImplemented()
+//             }
+//         }
+
+//         sceneView.onSessionUpdated = { _, frame ->
+//             currentArFrame = frame
+//             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
+//                 lastFrameTime = System.currentTimeMillis()
+//                 broadcastHardwareTelemetry(frame)
+//             }
+//         }
+//     }
+
+//     private fun handleInit(call: MethodCall, result: MethodChannel.Result) {
+//         val showPlanes = call.argument<Boolean>("showPlanes") ?: false
+//         sceneView.planeRenderer.isVisible = showPlanes
+//         result.success(null)
+//     }
+
+//     override fun onDestroy(owner: LifecycleOwner) {
+//         dispose()
+//     }
+
+//     private fun broadcastHardwareTelemetry(frame: Frame) {
+//         val camera = frame.camera
+//         val packet = mutableMapOf<String, Any?>()
+
+//         packet["trackingState"] = camera.trackingState.name
+//         if (camera.trackingState != TrackingState.TRACKING) {
+//             sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
+//             return
+//         }
+
+//         // 1. Point Cloud & Light (Restored)
+//         try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
+//         packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
+
+//         // 2. Camera Orientation (The core of the fix)
+//         val camPose = camera.displayOrientedPose
+//         val q = camPose.rotationQuaternion
+//         val qX = q[0].toDouble(); val qY = q[1].toDouble(); val qZ = q[2].toDouble(); val qW = q[3].toDouble()
+
+//         // 🎯 RELATIVE TILT: Phone's pitch relative to gravity (Always active)
+//         val pitch = atan2(2.0 * (qY * qZ + qX * qW), qX * qX - qY * qY - qZ * qZ + qW * qW)
+//         val phoneTilt = pitch * (180.0 / PI)
+//         packet["wallTilt"] = phoneTilt 
+
+//         // 3. Hit Test Logic
+//         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+//         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
+
+//         if (bestHit != null) {
+//             val hp = bestHit.hitPose
+//             packet["hitType"] = if (abs(hp.yAxis[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
+//             packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+//             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+
+//             // 🎯 RELATIVE ANGLE: Phone's heading vs Wall Normal
+//             // We compare the phone's forward vector to the wall's normal vector
+//             val camYaw = atan2(2.0 * (qY * qW - qX * qZ), qX * qX - qY * qY + qZ * qZ - qW * qW)
+//             val wallNormalX = hp.zAxis[0].toDouble()
+//             val wallNormalZ = hp.zAxis[2].toDouble()
+//             val wallYaw = atan2(wallNormalX, wallNormalZ)
+            
+//             // Calculate the difference (how "square" you are to the wall)
+//             var relAngle = (camYaw - wallYaw) * (180.0 / PI)
+//             // Normalize to -180 to 180
+//             while (relAngle > 180) relAngle -= 360
+//             while (relAngle < -180) relAngle += 360
+//             packet["wallAngle"] = relAngle
+
+//         } else {
+//             packet["hitType"] = "SEARCHING"
+//             packet["wallAngle"] = 0.0 // No wall, no relative angle
+//             packet["distance"] = null
+//         }
+
+//         sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
+//     }
+
+//     private fun sendTelemetryPacket(packet: Map<String, Any>) {
+//         isBridgeBusy = true
+//         activity.runOnUiThread {
+//             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+//             isBridgeBusy = false
+//         }
+//     }
+
+//     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+//         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
+//         val intrinsics = frame.camera.imageIntrinsics
+//         result.success(mapOf(
+//             "fx" to intrinsics.focalLength[0].toDouble(), "fy" to intrinsics.focalLength[1].toDouble(),
+//             "cx" to intrinsics.principalPoint[0].toDouble(), "cy" to intrinsics.principalPoint[1].toDouble(),
+//             "width" to intrinsics.imageDimensions[0].toDouble(), "height" to intrinsics.imageDimensions[1].toDouble(),
+//             "viewWidth" to sceneView.width.toDouble(), "viewHeight" to sceneView.height.toDouble(),
+//             "lightIntensity" to (frame.lightEstimate?.pixelIntensity?.toDouble() ?: 1.0)
+//         ))
+//     }
+
+//     private fun handleSnapshot(result: MethodChannel.Result) {
+//         if (sceneView.width <= 0 || sceneView.height <= 0) return result.error("ERR", "Invalid View", null)
+//         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+//         PixelCopy.request(sceneView, bitmap, { res ->
+//             if (res == PixelCopy.SUCCESS) {
+//                 mainScope.launch(Dispatchers.IO) {
+//                     val stream = java.io.ByteArrayOutputStream(); bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+//                     withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
+//                 }
+//             } else result.error("ERR", "PixelCopy failed", null)
+//         }, Handler(Looper.getMainLooper()))
+//     }
+
+//     private fun matrixToArray(p: Pose): List<Double> {
+//         val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
+//     }
+
+//     private fun handleGetCameraPose(result: MethodChannel.Result) {
+//         currentArFrame?.camera?.displayOrientedPose?.let { p -> 
+//             val m = FloatArray(16); p.toMatrix(m, 0); result.success(m.map { it.toDouble() })
+//         } ?: result.error("ERR", "No pose", null)
+//     }
+
+//     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+//         val proj = FloatArray(16); currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+//         result.success(proj.map { it.toDouble() })
+//     }
+
+//     override fun getView(): View = rootLayout
+
+//     override fun dispose() {
+//         if (isDestroyed.getAndSet(true)) return
+//         activityLifecycle.removeObserver(this)
+//         mainScope.cancel()
+//         sceneView.destroy()
+//     }
+// }
 
 
 // package net.kodified.ar_flutter_plugin_updated
