@@ -101,7 +101,7 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        val packet = mutableMapOf<String, Any>()
+        val packet = mutableMapOf<String, Any?>() // Use Any? to allow nulls
 
         // 1. Core Status Data
         packet["trackingState"] = camera.trackingState.name
@@ -114,66 +114,76 @@ class ArView(
 
         // 2. Point Cloud / Feature Count
         try {
-            val pc = frame.acquirePointCloud()
-            packet["featureCount"] = pc.points.remaining() / 4
-            pc.release()
+            frame.acquirePointCloud().use { pc ->
+                packet["featureCount"] = pc.points.remaining() / 4
+            }
         } catch (e: Exception) {
             packet["featureCount"] = 0
         }
 
         // 3. Lighting Data
-        packet["lightIntensity"] = frame.lightEstimate?.let { 
-            if (it.state == LightEstimate.State.VALID) it.pixelIntensity.toDouble() else 1.0 
-        } ?: 1.0
+        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }
+            ?.pixelIntensity?.toDouble() ?: 1.0
 
         // 4. Matrix & Pose Data
         val camPose = camera.displayOrientedPose
-        val camArr = FloatArray(16)
-        camPose.toMatrix(camArr, 0)
+        val camArr = FloatArray(16).also { camPose.toMatrix(it, 0) }
         packet["cameraPose"] = camArr.map { it.toDouble() }
 
-        val projArr = FloatArray(16)
-        camera.getProjectionMatrix(projArr, 0, 0.1f, 100.0f)
+        val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
         // 5. Hit Testing Logic
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        val bestHit = hits.firstOrNull { h -> h.trackable is Plane } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
+        val bestHit = hits.firstOrNull { it.trackable is Plane }
+            ?: hits.firstOrNull { it.trackable is DepthPoint }
 
         if (bestHit != null) {
+            // STATE: A surface was successfully hit
             val hp = bestHit.hitPose
-            val hpArr = FloatArray(16)
-            hp.toMatrix(hpArr, 0)
-            
+            val hpArr = FloatArray(16).also { hp.toMatrix(it, 0) }
+
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+
+            val dx = hp.tx() - camPose.tx()
+            val dy = hp.ty() - camPose.ty()
+            val dz = hp.tz() - camPose.tz()
+            packet["distance"] = sqrt(dx * dx + dy * dy + dz * dz).toDouble()
+
+            // Use the normal of the hit plane for tilt and angle
+            val planeNormal = bestHit.trackable.let { if (it is Plane) it.centerPose.yAxis else hp.yAxis }
+            val normalY = abs(planeNormal[1]).toDouble().coerceIn(0.0, 1.0)
             
-            val dx = hp.tx() - camera.pose.tx()
-            val dy = hp.ty() - camera.pose.ty()
-            val dz = hp.tz() - camera.pose.tz()
-            packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
-            
-            val normalY = abs(hp.yAxis[1]).toDouble().coerceIn(-0.9999, 0.9999)
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
-            
-            // 🎯 FIXED TILT: Guard against NaN with coerceIn
+            packet["wallNormal"] = listOf(planeNormal[0].toDouble(), planeNormal[1].toDouble(), planeNormal[2].toDouble())
             packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
 
-            // 🎯 FIXED ANGLE: Added the missing wallAngle key to the hit block
-            val normalX = hp.zAxis[0].toDouble()
-            val normalZ = hp.zAxis[2].toDouble()
-            packet["wallAngle"] = atan2(normalX, normalZ) * (180.0 / PI)
+            // Calculate the wall's horizontal angle (yaw) from its normal
+            val wallNormalX = planeNormal[0].toDouble()
+            val wallNormalZ = planeNormal[2].toDouble()
+            // Adding 90 degrees corrects the orientation to be perpendicular to the normal's direction
+            packet["wallAngle"] = (atan2(wallNormalX, wallNormalZ) * (180.0 / PI)) + 90.0
 
         } else {
-            val q = camPose.rotationQuaternion
-            val pitch = atan2(
-                2.0 * (q[3].toDouble() * q[0].toDouble() + q[1].toDouble() * q[2].toDouble()),
-                1.0 - 2.0 * (q[0].toDouble() * q[0].toDouble() + q[1].toDouble() * q[1].toDouble())
-            )
-            packet["wallTilt"] = pitch * (180.0 / PI)
-            packet["wallAngle"] = 0.0 // Keep alive during search
+            // STATE: No surface was hit ("Searching")
             packet["hitType"] = "SEARCHING"
+
+            // When searching, calculate TILT and ANGLE from the CAMERA's orientation
+            val q = camPose.rotationQuaternion
+            
+            // Tilt (Pitch) of the camera
+            val pitch = atan2(2.0 * (q[1] * q[2] + q[0] * q[3]), q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3])
+            packet["wallTilt"] = pitch * (180.0 / PI)
+
+            // Angle (Yaw) of the camera
+            val yaw = atan2(2.0 * (q[1] * q[0] - q[2] * q[3]), q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3])
+            packet["wallAngle"] = yaw * (180.0 / PI)
+
+            // Set other hit-related values to null as they are not available
+            packet["distance"] = null
+            packet["wallNormal"] = null
+            packet["worldPosition"] = null
         }
 
         sendTelemetryPacket(packet)
