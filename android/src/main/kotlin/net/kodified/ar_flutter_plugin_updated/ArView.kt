@@ -101,14 +101,15 @@ class ArView(
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        val packet = mutableMapOf<String, Any?>() // Use Any? to allow nulls
+        val packet = mutableMapOf<String, Any?>() // Keep this as Any? for now
 
         // 1. Core Status Data
         packet["trackingState"] = camera.trackingState.name
         packet["trackingFailureReason"] = camera.trackingFailureReason.name
 
         if (camera.trackingState != TrackingState.TRACKING) {
-            sendTelemetryPacket(packet)
+            // 🎯 FIX 1: Filter out nulls before sending
+            sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
             return
         }
 
@@ -151,7 +152,6 @@ class ArView(
             val dz = hp.tz() - camPose.tz()
             packet["distance"] = sqrt(dx * dx + dy * dy + dz * dz).toDouble()
 
-            // Use the normal of the hit plane for tilt and angle
             val planeNormal = bestHit.trackable.let { if (it is Plane) it.centerPose.yAxis else hp.yAxis }
             val normalY = abs(planeNormal[1]).toDouble().coerceIn(0.0, 1.0)
             
@@ -159,35 +159,40 @@ class ArView(
             packet["wallNormal"] = listOf(planeNormal[0].toDouble(), planeNormal[1].toDouble(), planeNormal[2].toDouble())
             packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
 
-            // Calculate the wall's horizontal angle (yaw) from its normal
             val wallNormalX = planeNormal[0].toDouble()
             val wallNormalZ = planeNormal[2].toDouble()
-            // Adding 90 degrees corrects the orientation to be perpendicular to the normal's direction
             packet["wallAngle"] = (atan2(wallNormalX, wallNormalZ) * (180.0 / PI)) + 90.0
 
         } else {
             // STATE: No surface was hit ("Searching")
             packet["hitType"] = "SEARCHING"
-
-            // When searching, calculate TILT and ANGLE from the CAMERA's orientation
+            
             val q = camPose.rotationQuaternion
             
+            // 🎯 FIX 2: Convert quaternion components to Double for math functions
+            val qx = q[0].toDouble()
+            val qy = q[1].toDouble()
+            val qz = q[2].toDouble()
+            val qw = q[3].toDouble()
+
             // Tilt (Pitch) of the camera
-            val pitch = atan2(2.0 * (q[1] * q[2] + q[0] * q[3]), q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3])
+            val pitch = atan2(2.0 * (qy * qz + qx * qw), qx * qx - qy * qy - qz * qz + qw * qw)
             packet["wallTilt"] = pitch * (180.0 / PI)
 
             // Angle (Yaw) of the camera
-            val yaw = atan2(2.0 * (q[1] * q[0] - q[2] * q[3]), q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3])
+            val yaw = atan2(2.0 * (qy * qw - qx * qz), qx * qx - qy * qy + qz * qz - qw * qw)
             packet["wallAngle"] = yaw * (180.0 / PI)
 
-            // Set other hit-related values to null as they are not available
+            // Set other hit-related values to null
             packet["distance"] = null
             packet["wallNormal"] = null
             packet["worldPosition"] = null
         }
 
-        sendTelemetryPacket(packet)
+        // 🎯 FIX 1 (Applied again): Filter out nulls before sending
+        sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
     }
+
 
     private fun sendTelemetryPacket(packet: Map<String, Any>) {
         isBridgeBusy = true
