@@ -15,7 +15,7 @@ class ArFlutterPlugin: FlutterPlugin, ActivityAware {
 
     override fun onAttachedToEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
         binding.platformViewRegistry.registerViewFactory(
-            "ar_view", 
+            "ar_flutter_plugin_2", // 🎯 MUST match the error in your logs
             ArViewFactory(binding.binaryMessenger, this)
         )
     }

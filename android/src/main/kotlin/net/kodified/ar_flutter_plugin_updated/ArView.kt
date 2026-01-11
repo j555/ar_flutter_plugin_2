@@ -41,9 +41,12 @@ class ArView(
     private var currentArFrame: Frame? = null 
 
     init {
+        // Registering as an observer handles cleanup automatically
         activityLifecycle.addObserver(this)
         
         sceneView.apply {
+            // 🎯 AUTOMATIC LIFECYCLE: SceneView handles resume/pause via this line.
+            // Do not call sceneView.resume() or pause() manually.
             this.lifecycle = activityLifecycle
             planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
             
@@ -85,19 +88,23 @@ class ArView(
         }
     }
 
+    // 🎯 CLEANUP ONLY: resume/pause are handled by the 'lifecycle' assignment above
     override fun onDestroy(owner: LifecycleOwner) {
         dispose()
     }
 
-    // --- TELEMETRY BROADCAST ---
-
     private fun broadcastHardwareTelemetry(frame: Frame) {
         val camera = frame.camera
-        if (camera.trackingState != TrackingState.TRACKING) return
-
         val packet = mutableMapOf<String, Any>()
-        
-        // Accurate Lighting Intensity
+
+        packet["trackingState"] = camera.trackingState.name
+        packet["trackingFailureReason"] = camera.trackingFailureReason.name
+
+        if (camera.trackingState != TrackingState.TRACKING) {
+            sendTelemetryPacket(packet)
+            return
+        }
+
         val lightEstimate = frame.lightEstimate
         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
             lightEstimate.pixelIntensity.toDouble()
@@ -109,7 +116,12 @@ class ArView(
         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
         packet["projectionMatrix"] = proj.map { it.toDouble() }
 
-        // Core Hit Testing: Verify hits are on the polygon surface
+        try {
+            frame.acquirePointCloud()?.use { pc ->
+                packet["featureCount"] = pc.points.remaining() / 4
+            }
+        } catch (e: Exception) { packet["featureCount"] = 0 }
+
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { h -> 
             val t = h.trackable
@@ -121,13 +133,16 @@ class ArView(
             packet["hit"] = mapOf("transform" to matrixToArray(hp))
             val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
             packet["distance"] = dist
-            
             val normalY = abs(hp.yAxis[1])
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
         }
 
+        sendTelemetryPacket(packet)
+    }
+
+    private fun sendTelemetryPacket(packet: Map<String, Any>) {
         isBridgeBusy = true
         activity.runOnUiThread {
             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
@@ -135,12 +150,10 @@ class ArView(
         }
     }
 
-    // --- 🎯 RESTORED MISSING METHODS ---
-
     private fun handleGetCameraPose(result: MethodChannel.Result) {
         currentArFrame?.camera?.displayOrientedPose?.let { p -> 
             result.success(matrixToArray(p)) 
-        } ?: result.error("ERR", "No pose available", null)
+        } ?: result.error("ERR", "No pose", null)
     }
 
     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
@@ -152,7 +165,6 @@ class ArView(
     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
         val intrinsics = frame.camera.imageIntrinsics
-        
         result.success(mapOf(
             "fx" to intrinsics.focalLength[0].toDouble(),
             "fy" to intrinsics.focalLength[1].toDouble(),
@@ -175,10 +187,9 @@ class ArView(
                     mainScope.launch(Dispatchers.IO) {
                         val stream = java.io.ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                        val bytes = stream.toByteArray()
-                        withContext(Dispatchers.Main) { result.success(bytes) }
+                        withContext(Dispatchers.Main) { result.success(stream.toByteArray()) }
                     }
-                } else result.error("ERR", "PixelCopy failed: $res", null)
+                } else result.error("ERR", "PixelCopy failed", null)
             }, Handler(Looper.getMainLooper()))
         } catch (e: Exception) { result.error("ERR", e.message, null) }
     }
@@ -197,6 +208,204 @@ class ArView(
     }
 }
 
+// package net.kodified.ar_flutter_plugin_updated
+
+// import android.app.Activity
+// import android.content.Context
+// import android.graphics.Bitmap
+// import android.os.*
+// import android.util.Log
+// import android.view.*
+// import android.widget.FrameLayout
+// import androidx.lifecycle.DefaultLifecycleObserver
+// import androidx.lifecycle.Lifecycle
+// import androidx.lifecycle.LifecycleOwner
+// import com.google.ar.core.*
+// import io.flutter.plugin.common.BinaryMessenger
+// import io.flutter.plugin.common.MethodChannel
+// import io.flutter.plugin.platform.PlatformView
+// import io.github.sceneview.ar.ARSceneView
+// import io.github.sceneview.ar.scene.PlaneRenderer
+// import kotlinx.coroutines.*
+// import java.util.concurrent.atomic.AtomicBoolean
+// import kotlin.math.*
+
+// class ArView(
+//     context: Context,
+//     private val messenger: BinaryMessenger,
+//     private val id: Int,
+//     private val activityLifecycle: Lifecycle,
+//     private val activity: Activity,
+// ) : PlatformView, DefaultLifecycleObserver {
+
+//     private val TAG: String = "ArView_Native"
+//     private val mainScope = CoroutineScope(Dispatchers.Main + Job())
+//     private val rootLayout: ViewGroup = FrameLayout(context)
+//     private val sceneView: ARSceneView = ARSceneView(context, null)
+//     private val sessionChannel = MethodChannel(messenger, "arsession_$id")
+    
+//     private val isDestroyed = AtomicBoolean(false)
+//     private var isCenterHitTrackingEnabled = false
+//     private var isBridgeBusy = false
+//     private var lastFrameTime: Long = 0
+//     private var currentArFrame: Frame? = null 
+
+//     init {
+//         activityLifecycle.addObserver(this)
+        
+//         sceneView.apply {
+//             this.lifecycle = activityLifecycle
+//             planeRenderer.planeRendererMode = PlaneRenderer.PlaneRendererMode.RENDER_ALL
+            
+//             this.sessionConfiguration = { session, config ->
+//                 config.apply {
+//                     planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+//                     updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+//                     focusMode = Config.FocusMode.AUTO
+//                     lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
+                    
+//                     if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+//                         depthMode = Config.DepthMode.AUTOMATIC
+//                     }
+//                 }
+//             }
+//         }
+//         rootLayout.addView(sceneView)
+
+//         sessionChannel.setMethodCallHandler { call, result ->
+//             if (isDestroyed.get()) return@setMethodCallHandler
+//             when (call.method) {
+//                 "init" -> result.success(null)
+//                 "startCenterHitTracking" -> { isCenterHitTrackingEnabled = true; result.success(null) }
+//                 "stopCenterHitTracking" -> { isCenterHitTrackingEnabled = false; result.success(null) }
+//                 "snapshot" -> handleSnapshot(result)
+//                 "getImageIntrinsics" -> handleGetImageIntrinsics(result)
+//                 "getCameraPose" -> handleGetCameraPose(result)
+//                 "getProjectionMatrix" -> handleGetProjectionMatrix(result)
+//                 else -> result.notImplemented()
+//             }
+//         }
+
+//         sceneView.onSessionUpdated = { _, frame ->
+//             currentArFrame = frame
+//             if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
+//                 lastFrameTime = System.currentTimeMillis()
+//                 broadcastHardwareTelemetry(frame)
+//             }
+//         }
+//     }
+
+//     override fun onDestroy(owner: LifecycleOwner) {
+//         dispose()
+//     }
+
+//     // --- TELEMETRY BROADCAST ---
+
+//     private fun broadcastHardwareTelemetry(frame: Frame) {
+//         val camera = frame.camera
+//         if (camera.trackingState != TrackingState.TRACKING) return
+
+//         val packet = mutableMapOf<String, Any>()
+        
+//         // Accurate Lighting Intensity
+//         val lightEstimate = frame.lightEstimate
+//         packet["lightIntensity"] = if (lightEstimate.state == LightEstimate.State.VALID) {
+//             lightEstimate.pixelIntensity.toDouble()
+//         } else {
+//             1.0
+//         }
+
+//         packet["cameraPose"] = matrixToArray(camera.displayOrientedPose)
+//         val proj = FloatArray(16); camera.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+//         packet["projectionMatrix"] = proj.map { it.toDouble() }
+
+//         // Core Hit Testing: Verify hits are on the polygon surface
+//         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+//         val bestHit = hits.firstOrNull { h -> 
+//             val t = h.trackable
+//             (t is Plane && t.isPoseInPolygon(h.hitPose))
+//         } ?: hits.firstOrNull { h -> h.trackable is DepthPoint }
+
+//         if (bestHit != null) {
+//             val hp = bestHit.hitPose
+//             packet["hit"] = mapOf("transform" to matrixToArray(hp))
+//             val dist = sqrt((hp.tx()-camera.pose.tx()).pow(2) + (hp.ty()-camera.pose.ty()).pow(2) + (hp.tz()-camera.pose.tz()).pow(2)).toDouble()
+//             packet["distance"] = dist
+            
+//             val normalY = abs(hp.yAxis[1])
+//             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
+//             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
+//             packet["wallTilt"] = 90.0 - (acos(normalY.toDouble()) * (180.0 / PI))
+//         }
+
+//         isBridgeBusy = true
+//         activity.runOnUiThread {
+//             if (!isDestroyed.get()) sessionChannel.invokeMethod("onUnifiedUpdate", packet)
+//             isBridgeBusy = false
+//         }
+//     }
+
+//     // --- 🎯 RESTORED MISSING METHODS ---
+
+//     private fun handleGetCameraPose(result: MethodChannel.Result) {
+//         currentArFrame?.camera?.displayOrientedPose?.let { p -> 
+//             result.success(matrixToArray(p)) 
+//         } ?: result.error("ERR", "No pose available", null)
+//     }
+
+//     private fun handleGetProjectionMatrix(result: MethodChannel.Result) {
+//         val proj = FloatArray(16)
+//         currentArFrame?.camera?.getProjectionMatrix(proj, 0, 0.1f, 100.0f)
+//         result.success(proj.map { it.toDouble() })
+//     }
+
+//     private fun handleGetImageIntrinsics(result: MethodChannel.Result) {
+//         val frame = currentArFrame ?: return result.error("ERR", "No Frame", null)
+//         val intrinsics = frame.camera.imageIntrinsics
+        
+//         result.success(mapOf(
+//             "fx" to intrinsics.focalLength[0].toDouble(),
+//             "fy" to intrinsics.focalLength[1].toDouble(),
+//             "cx" to intrinsics.principalPoint[0].toDouble(),
+//             "cy" to intrinsics.principalPoint[1].toDouble(),
+//             "width" to intrinsics.imageDimensions[0].toDouble(),
+//             "height" to intrinsics.imageDimensions[1].toDouble(),
+//             "viewWidth" to sceneView.width.toDouble(),
+//             "viewHeight" to sceneView.height.toDouble(),
+//             "lightIntensity" to (frame.lightEstimate?.pixelIntensity?.toDouble() ?: 1.0)
+//         ))
+//     }
+
+//     private fun handleSnapshot(result: MethodChannel.Result) {
+//         if (sceneView.width <= 0 || sceneView.height <= 0) return result.error("ERR", "Invalid View", null)
+//         val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+//         try {
+//             PixelCopy.request(sceneView, bitmap, { res ->
+//                 if (res == PixelCopy.SUCCESS) {
+//                     mainScope.launch(Dispatchers.IO) {
+//                         val stream = java.io.ByteArrayOutputStream()
+//                         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+//                         val bytes = stream.toByteArray()
+//                         withContext(Dispatchers.Main) { result.success(bytes) }
+//                     }
+//                 } else result.error("ERR", "PixelCopy failed: $res", null)
+//             }, Handler(Looper.getMainLooper()))
+//         } catch (e: Exception) { result.error("ERR", e.message, null) }
+//     }
+
+//     private fun matrixToArray(p: Pose): List<Double> {
+//         val m = FloatArray(16); p.toMatrix(m, 0); return m.map { it.toDouble() }
+//     }
+
+//     override fun getView(): View = rootLayout
+
+//     override fun dispose() {
+//         if (isDestroyed.getAndSet(true)) return
+//         activityLifecycle.removeObserver(this)
+//         mainScope.cancel()
+//         sceneView.destroy()
+//     }
+// }
 
 
 // package net.kodified.ar_flutter_plugin_updated
