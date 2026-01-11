@@ -4,28 +4,37 @@ import androidx.annotation.NonNull
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import androidx.lifecycle.Lifecycle
+import io.flutter.embedding.engine.plugins.lifecycle.FlutterLifecycleAdapter
 
 class ArFlutterPlugin: FlutterPlugin, ActivityAware {
-    private var lifecycle: androidx.lifecycle.Lifecycle? = null
+    private var lifecycle: Lifecycle? = null
 
-    override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
-        // Register the PlatformView factory
-        flutterPluginBinding.platformViewRegistry.registerViewFactory(
+    override fun onAttachedToEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
+        // Register the View Factory with the string key "ar_view"
+        // This MUST match the viewType used in your Flutter code
+        binding.platformViewRegistry.registerViewFactory(
             "ar_view", 
-            ArViewFactory(flutterPluginBinding.binaryMessenger)
+            ArViewFactory(binding.binaryMessenger, this)
         )
     }
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {}
 
-    // ActivityAware methods to provide the lifecycle to ArView
+    // 🎯 LIFECYCLE BRIDGE: This captures the Activity and its Lifecycle for the AR Session
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        // This is where we get the activity lifecycle for ArView
+        lifecycle = FlutterLifecycleAdapter.getActivityLifecycle(binding)
+        // Pass the activity and lifecycle to your factory if needed, 
+        // but here we store it to be requested by the Factory's 'create' method
     }
 
-    override fun onDetachedFromActivityForConfigChanges() {}
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {}
-    override fun onDetachedFromActivity() {}
+    fun getLifecycle(): Lifecycle? = lifecycle
+
+    override fun onDetachedFromActivityForConfigChanges() { lifecycle = null }
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+        lifecycle = FlutterLifecycleAdapter.getActivityLifecycle(binding)
+    }
+    override fun onDetachedFromActivity() { lifecycle = null }
 }
 
 
