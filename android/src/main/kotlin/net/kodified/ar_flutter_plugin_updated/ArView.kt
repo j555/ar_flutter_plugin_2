@@ -1,3 +1,4 @@
+// android/src/main/kotlin/net/kodified/ar_flutter_plugin_updated/ArView.kt
 package net.kodified.ar_flutter_plugin_updated
 
 import android.app.Activity
@@ -46,8 +47,6 @@ class ArView(
         
         sceneView.apply {
             this.lifecycle = activityLifecycle
-            
-            // 🎯 KEEP DOTS REMOVED
             this.planeRenderer.isVisible = false
             this.planeRenderer.isEnabled = false
             
@@ -103,30 +102,25 @@ class ArView(
         val camera = frame.camera
         val packet = mutableMapOf<String, Any?>()
 
-        // 1. Core Status Data
         packet["trackingState"] = camera.trackingState.name
         packet["trackingFailureReason"] = camera.trackingFailureReason.name
 
         if (camera.trackingState != TrackingState.TRACKING) {
-            // 🎯 FIX 1: Filter out nulls before sending
             sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
             return
         }
 
-        // 2. Point Cloud / Feature Count
+        // Feature Count
         try {
             frame.acquirePointCloud().use { pc ->
                 packet["featureCount"] = pc.points.remaining() / 4
             }
-        } catch (e: Exception) {
-            packet["featureCount"] = 0
-        }
+        } catch (e: Exception) { packet["featureCount"] = 0 }
 
-        // 3. Lighting Data
+        // Light & Matrices
         packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }
             ?.pixelIntensity?.toDouble() ?: 1.0
 
-        // 4. Matrix & Pose Data
         val camPose = camera.displayOrientedPose
         val camArr = FloatArray(16).also { camPose.toMatrix(it, 0) }
         packet["cameraPose"] = camArr.map { it.toDouble() }
@@ -134,73 +128,48 @@ class ArView(
         val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
         packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-        // 5. Hit Testing Logic
+        // 🎯 QUATERNION DATA (Unified for both paths)
+        val q = camPose.rotationQuaternion
+        val qX = q[0].toDouble()
+        val qY = q[1].toDouble()
+        val qZ = q[2].toDouble()
+        val qW = q[3].toDouble()
+
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        val bestHit = hits.firstOrNull { it.trackable is Plane }
-            ?: hits.firstOrNull { it.trackable is DepthPoint }
+        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
 
         if (bestHit != null) {
-            // STATE: A surface was successfully hit
             val hp = bestHit.hitPose
             val hpArr = FloatArray(16).also { hp.toMatrix(it, 0) }
-
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
 
             val dx = hp.tx() - camPose.tx()
             val dy = hp.ty() - camPose.ty()
             val dz = hp.tz() - camPose.tz()
-            packet["distance"] = sqrt(dx * dx + dy * dy + dz * dz).toDouble()
+            packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
 
-            // Extract Normal from HitPose Y-Axis (Column 1: indices 4, 5, 6)
-            val normalX = hpArr[4].toDouble()
-            val normalY = hpArr[5].toDouble()
-            val normalZ = hpArr[6].toDouble()
-
-            val wallNormalX = planeNormal[0].toDouble()
-            val wallNormalZ = planeNormal[2].toDouble()
-            val q = camPose.rotationQuaternion
-            packet["hitType"] = if (abs(normalY) < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["wallNormal"] = listOf(normalX, normalY, normalZ)
+            // Wall Normal logic
+            val trackable = bestHit.trackable
+            val nArr = if (trackable is Plane) trackable.centerPose.yAxis else hp.yAxis
+            val normalY = abs(nArr[1]).toDouble().coerceIn(0.0, 0.9999)
             
-            // 🎯 FIX 2: Convert quaternion components to Double for math functions
-            val clampedNormalY = abs(normalY).coerceIn(0.0, 1.0)
-            packet["wallTilt"] = 90.0 - (acos(clampedNormalY) * (180.0 / PI))
-            
-            // Angle: Bearing of the Normal
-            packet["wallAngle"] = atan2(normalX, normalZ) * (180.0 / PI)
+            packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
+            packet["wallNormal"] = listOf(nArr[0].toDouble(), nArr[1].toDouble(), nArr[2].toDouble())
+            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+            packet["wallAngle"] = atan2(nArr[0].toDouble(), nArr[2].toDouble()) * (180.0 / PI)
 
-            // Tilt (Pitch) of the camera
-            val pitch = atan2(2.0 * (qy * qz + qx * qw), qx * qx - qy * qy - qz * qz + qw * qw)
-            packet["wallTilt"] = pitch * (180.0 / PI)
-
-            // Angle (Yaw) of the camera
-            val yaw = atan2(2.0 * (qy * qw - qx * qz), qx * qx - qy * qy + qz * qz - qw * qw)
-            packet["wallAngle"] = yaw * (180.0 / PI)
-
-            // Set other hit-related values to null
         } else {
-            // SEARCHING STATE
             packet["hitType"] = "SEARCHING"
-            packet["distance"] = null
-            packet["wallNormal"] = null
-            packet["worldPosition"] = null
-
-            // Use Camera Z-axis (Indices 8, 9, 10) as "Virtual Normal"
-            val camNormalX = camArr[8].toDouble()
-            val camNormalY = camArr[9].toDouble()
-            val camNormalZ = camArr[10].toDouble()
-            
-            val clampedCamY = abs(camNormalY).coerceIn(0.0, 1.0)
-            packet["wallTilt"] = 90.0 - (acos(clampedCamY) * (180.0 / PI))
-            
-            packet["wallAngle"] = atan2(camNormalX, camNormalZ) * (180.0 / PI)
+            // 🎯 FALLBACK: Show Device orientation while searching
+            val pitch = atan2(2.0 * (qY * qZ + qX * qW), qX * qX - qY * qY - qZ * qZ + qW * qW)
+            packet["wallTilt"] = pitch * (180.0 / PI)
+            val yaw = atan2(2.0 * (qY * qW - qX * qZ), qX * qX - qY * qY + qZ * qZ - qW * qW)
+            packet["wallAngle"] = yaw * (180.0 / PI)
         }
 
-        // 🎯 FIX 1 (Applied again): Filter out nulls before sending
         sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
     }
-
 
     private fun sendTelemetryPacket(packet: Map<String, Any>) {
         isBridgeBusy = true
@@ -259,6 +228,7 @@ class ArView(
         sceneView.destroy()
     }
 }
+
 
 // package net.kodified.ar_flutter_plugin_updated
 
