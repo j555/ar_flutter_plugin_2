@@ -160,8 +160,8 @@ class ArView(
             
             // 🎯 FIXED TILT (Vertical Pitch) with NaN Guard
             // We clamp to 0.9999 to ensure acos never produces NaN
-            val normalY = abs(hp.yAxis[1]).toDouble().coerceIn(-0.9999, 0.9999)
-            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+            val clampedNormalY = normalY.toDouble().coerceIn(-0.9999, 0.9999)
+            packet["wallTilt"] = 90.0 - (acos(clampedNormalY) * (180.0 / PI))
 
             // 🎯 NEW: WALL ANGLE (Horizontal Alignment)
             // Calculates how "square" the phone is to the wall surface
