@@ -8,24 +8,24 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 class ArFlutterPlugin: FlutterPlugin, ActivityAware {
     private var lifecycle: androidx.lifecycle.Lifecycle? = null
 
-    override fun onAttachedToEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
-        binding.platformViewRegistry.registerViewFactory(
-            "ar_flutter_plugin_2", 
-            ArViewFactory(binding.binaryMessenger) { lifecycle }
+    override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        // Register the PlatformView factory
+        flutterPluginBinding.platformViewRegistry.registerViewFactory(
+            "ar_view", 
+            ArViewFactory(flutterPluginBinding.binaryMessenger)
         )
     }
 
     override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {}
 
+    // ActivityAware methods to provide the lifecycle to ArView
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        lifecycle = (binding.activity as? androidx.lifecycle.LifecycleOwner)?.lifecycle
+        // This is where we get the activity lifecycle for ArView
     }
 
-    override fun onDetachedFromActivityForConfigChanges() { lifecycle = null }
-    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        lifecycle = (binding.activity as? androidx.lifecycle.LifecycleOwner)?.lifecycle
-    }
-    override fun onDetachedFromActivity() { lifecycle = null }
+    override fun onDetachedFromActivityForConfigChanges() {}
+    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {}
+    override fun onDetachedFromActivity() {}
 }
 
 

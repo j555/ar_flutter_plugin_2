@@ -5,15 +5,13 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
-import androidx.lifecycle.Lifecycle
 
-class ArViewFactory(
-    private val messenger: BinaryMessenger,
-    private val lifecycleProvider: () -> Lifecycle?
-) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+class ArViewFactory(private val messenger: BinaryMessenger) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
     override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
-        val lifecycle = lifecycleProvider() ?: throw IllegalStateException("Lifecycle not available")
-        return ArView(context, messenger, viewId, lifecycle)
+        val creationParams = args as Map<String?, Any?>?
+        // Note: You'll need to pass the activity and lifecycle here 
+        // as we defined in the previous ArView constructor
+        return ArView(context, messenger, viewId) 
     }
 }
 
