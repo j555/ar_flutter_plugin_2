@@ -148,35 +148,31 @@ class ArView(
             packet["hit"] = mapOf("transform" to hpArr.map { it.toDouble() })
             packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
             
-            // 🎯 FIXED MATH: Explicitly using Float for calculations, then converting result to Double
             val dx = hp.tx() - camera.pose.tx()
             val dy = hp.ty() - camera.pose.ty()
             val dz = hp.tz() - camera.pose.tz()
             packet["distance"] = sqrt((dx * dx + dy * dy + dz * dz).toDouble())
             
-            val normalY = abs(hp.yAxis[1])
+            val normalY = abs(hp.yAxis[1]).toDouble().coerceIn(-0.9999, 0.9999)
             packet["hitType"] = if (normalY < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(hp.yAxis[0].toDouble(), hp.yAxis[1].toDouble(), hp.yAxis[2].toDouble())
             
-            // 🎯 FIXED TILT (Vertical Pitch) with NaN Guard
-            // We clamp to 0.9999 to ensure acos never produces NaN
-            val clampedNormalY = normalY.toDouble().coerceIn(-0.9999, 0.9999)
-            packet["wallTilt"] = 90.0 - (acos(clampedNormalY) * (180.0 / PI))
+            // 🎯 FIXED TILT: Guard against NaN with coerceIn
+            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
 
-            // 🎯 NEW: WALL ANGLE (Horizontal Alignment)
-            // Calculates how "square" the phone is to the wall surface
+            // 🎯 FIXED ANGLE: Added the missing wallAngle key to the hit block
             val normalX = hp.zAxis[0].toDouble()
             val normalZ = hp.zAxis[2].toDouble()
             packet["wallAngle"] = atan2(normalX, normalZ) * (180.0 / PI)
+
         } else {
-            // 6. 🎯 FALLBACK: Device Pitch (Uses the phone's internal gyro if no wall is hit)
-            val q = camPose.rotationQuaternion // [x, y, z, w]
+            val q = camPose.rotationQuaternion
             val pitch = atan2(
                 2.0 * (q[3].toDouble() * q[0].toDouble() + q[1].toDouble() * q[2].toDouble()),
                 1.0 - 2.0 * (q[0].toDouble() * q[0].toDouble() + q[1].toDouble() * q[1].toDouble())
             )
             packet["wallTilt"] = pitch * (180.0 / PI)
-            packet["wallAngle"] = 0.0
+            packet["wallAngle"] = 0.0 // Keep alive during search
             packet["hitType"] = "SEARCHING"
         }
 
