@@ -93,69 +93,61 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-        val camera = frame.camera
-        val packet = mutableMapOf<String, Any?>()
+    val camera = frame.camera
+    val packet = mutableMapOf<String, Any?>()
 
-        // 1. CORE STATUS & TRACKING
-        packet["trackingState"] = camera.trackingState.name
-        packet["trackingFailureReason"] = camera.trackingFailureReason.name
+    // 1. Core Status (Restore all tracking variables)
+    packet["trackingState"] = camera.trackingState.name
+    packet["trackingFailureReason"] = camera.trackingFailureReason.name
 
-        if (camera.trackingState != TrackingState.TRACKING) {
-            sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
-            return
-        }
+    if (camera.trackingState != TrackingState.TRACKING) {
+        sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
+        return
+    }
 
-        // 2. STABILITY METRICS (Feature points & Lighting)
-        try {
-            frame.acquirePointCloud().use { pc ->
-                packet["featureCount"] = pc.points.remaining() / 4
-            }
-        } catch (e: Exception) { packet["featureCount"] = 0 }
+    // 2. Metrics & Matrices (Mandatory for perfect artwork skew/layers)
+    try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
+    packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
 
-        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }
-            ?.pixelIntensity?.toDouble() ?: 1.0
+    val camPose = camera.displayOrientedPose
+    val camMat = FloatArray(16).also { camPose.toMatrix(it, 0) }
+    packet["cameraPose"] = camMat.map { it.toDouble() }
 
-        // 3. MATRICES (Critical for Coordinate Matching)
-        val camPose = camera.displayOrientedPose
-        val camMat = FloatArray(16).also { camPose.toMatrix(it, 0) }
-        packet["cameraPose"] = camMat.map { it.toDouble() }
+    val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
+    packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-        val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
-        packet["projectionMatrix"] = projArr.map { it.toDouble() }
+    // 🎯 ROBUST TILT CALCULATION (Using Forward Vector)
+    // local -Z axis of camera is forward. Column 3 of matrix: indices 8, 9, 10
+    val forwardX = -camMat[8].toDouble()
+    val forwardY = -camMat[9].toDouble()
+    val forwardZ = -camMat[10].toDouble()
+    val horizontalDist = sqrt(forwardX * forwardX + forwardZ * forwardZ)
+    val phoneTilt = atan2(forwardY, horizontalDist) * (180.0 / PI)
+    packet["wallTilt"] = phoneTilt 
 
-        // 4. CAMERA FORWARD VECTOR (For Tilt/Angle Fallbacks)
-        val forwardX = -camMat[8].toDouble()
-        val forwardY = -camMat[9].toDouble()
-        val forwardZ = -camMat[10].toDouble()
-        val horizontalDist = sqrt(forwardX * forwardX + forwardZ * forwardZ)
+    // 3. Hit Test Logic
+    val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+    val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
 
-        // 5. HIT TEST LOGIC (Wall Data)
-        val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
+    if (bestHit != null) {
+        val hp = bestHit.hitPose
+        val hpMat = FloatArray(16).also { hp.toMatrix(it, 0) }
+        val normal = hp.yAxis // ✅ Correct: Y is Plane Normal
 
-        if (bestHit != null) {
-            val hp = bestHit.hitPose
-            val hpMat = FloatArray(16).also { hp.toMatrix(it, 0) }
-            val normal = hp.yAxis // Correct Plane Normal
+        packet["hit"] = mapOf("transform" to hpMat.map { it.toDouble() })
+        packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
+        packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+        packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+        packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
 
-            packet["hit"] = mapOf("transform" to hpMat.map { it.toDouble() })
-            packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
-            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
-            packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
-            packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
-
-            // 🎯 PHONE TILT (Pitch): Constant relative to gravity for skew correction
-            // We use the camera's forward vector to determine if we are looking up or down
-            packet["wallTilt"] = atan2(forwardY, horizontalDist) * (180.0 / PI)
-
-            // 🎯 RELATIVE ANGLE: Phone's heading vs Wall's facing direction
-            val camYaw = atan2(forwardX, forwardZ)
-            val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
-            var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI)
-            
-            while (relAngle > 180) relAngle -= 360
-            while (relAngle < -180) relAngle += 360
-            packet["wallAngle"] = relAngle
+        // 🎯 RELATIVE ANGLE: Phone heading vs Wall normal
+        val camYaw = atan2(forwardX, forwardZ)
+        val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
+        var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI)
+        
+        while (relAngle > 180) relAngle -= 360
+        while (relAngle < -180) relAngle += 360
+        packet["wallAngle"] = relAngle
 
         } else {
             // SEARCHING STATE: Provide Device Orientation so the UI doesn't freeze or flicker
