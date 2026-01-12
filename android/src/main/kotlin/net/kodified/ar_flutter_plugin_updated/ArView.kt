@@ -144,11 +144,11 @@ class ArView(
             packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
             packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
 
-            // 🎯 PRODUCTION-READY TILT: Calculate surface lean relative to gravity
-            val normalY = abs(normal[1]).toDouble().coerceIn(0.0, 0.9999)
-            packet["wallTilt"] = 90.0 - (acos(normalY) * (180.0 / PI))
+            // 🎯 PHONE TILT (Pitch): Constant relative to gravity for skew correction
+            // We use the camera's forward vector to determine if we are looking up or down
+            packet["wallTilt"] = atan2(forwardY, horizontalDist) * (180.0 / PI)
 
-            // 🎯 PRODUCTION-READY ANGLE: Relative "Squareness" to the wall
+            // 🎯 RELATIVE ANGLE: Phone's heading vs Wall's facing direction
             val camYaw = atan2(forwardX, forwardZ)
             val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
             var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI)
