@@ -125,6 +125,9 @@ class ArView(
         // 🎯 TILT: Angle relative to horizon (0 = Camera pointing straight at wall)
         packet["wallTilt"] = atan2(fY, horizontalDist) * (180.0 / PI)
 
+        val roll = atan2(camMat[4].toDouble(), camMat[5].toDouble()) * (180.0 / PI)
+        packet["phoneRoll"] = roll // This is now sent 100% of the time
+
         // 4. Hit Test Logic (Relative Angle)
         val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
         val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
@@ -147,9 +150,6 @@ class ArView(
             while (relAngle > 180) relAngle -= 360
             while (relAngle < -180) relAngle += 360
             packet["wallAngle"] = relAngle
-
-            val roll = atan2(camMat[4].toDouble(), camMat[5].toDouble()) * (180.0 / PI)
-            packet["phoneRoll"] = roll
         } else {
             packet["hitType"] = "SEARCHING"
             packet["wallAngle"] = atan2(fX, fZ) * (180.0 / PI) // Fallback to world heading
