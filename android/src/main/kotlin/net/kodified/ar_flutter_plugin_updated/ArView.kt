@@ -79,7 +79,7 @@ class ArView(
 
         sceneView.onSessionUpdated = { _, frame ->
             currentArFrame = frame
-            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 50L)) {
+            if (isCenterHitTrackingEnabled && !isBridgeBusy && (System.currentTimeMillis() - lastFrameTime >= 66L)) {
                 lastFrameTime = System.currentTimeMillis()
                 broadcastHardwareTelemetry(frame)
             }
@@ -93,70 +93,64 @@ class ArView(
     }
 
     private fun broadcastHardwareTelemetry(frame: Frame) {
-    val camera = frame.camera
-    val packet = mutableMapOf<String, Any?>()
+        val camera = frame.camera
+        val packet = mutableMapOf<String, Any?>()
 
-    // 1. Core Status (Restore all tracking variables)
-    packet["trackingState"] = camera.trackingState.name
-    packet["trackingFailureReason"] = camera.trackingFailureReason.name
+        // 1. Core Status (Maintain all existing variables)
+        packet["trackingState"] = camera.trackingState.name
+        packet["trackingFailureReason"] = camera.trackingFailureReason.name
+        if (camera.trackingState != TrackingState.TRACKING) {
+            sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
+            return
+        }
 
-    if (camera.trackingState != TrackingState.TRACKING) {
-        sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
-        return
-    }
+        // 2. Matrices (Mandatory for perfect artwork perspective/skew)
+        val camPose = camera.displayOrientedPose
+        val camMat = FloatArray(16).also { camPose.toMatrix(it, 0) }
+        packet["cameraPose"] = camMat.map { it.toDouble() }
+        val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
+        packet["projectionMatrix"] = projArr.map { it.toDouble() }
 
-    // 2. Metrics & Matrices (Mandatory for perfect artwork skew/layers)
-    try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
-    packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
+        // 3. Feature & Light
+        try { frame.acquirePointCloud().use { pc -> packet["featureCount"] = pc.points.remaining() / 4 } } catch (e: Exception) { packet["featureCount"] = 0 }
+        packet["lightIntensity"] = frame.lightEstimate.takeIf { it?.state == LightEstimate.State.VALID }?.pixelIntensity?.toDouble() ?: 1.0
 
-    val camPose = camera.displayOrientedPose
-    val camMat = FloatArray(16).also { camPose.toMatrix(it, 0) }
-    packet["cameraPose"] = camMat.map { it.toDouble() }
+        // 🎯 PRODUCTION MATH: Forward Vector Extraction
+        // Local -Z is camera forward. In the matrix, this is Column 3 (indices 8, 9, 10)
+        val fX = -camMat[8].toDouble()
+        val fY = -camMat[9].toDouble()
+        val fZ = -camMat[10].toDouble()
+        val horizontalDist = sqrt(fX * fX + fZ * fZ)
 
-    val projArr = FloatArray(16).also { camera.getProjectionMatrix(it, 0, 0.1f, 100.0f) }
-    packet["projectionMatrix"] = projArr.map { it.toDouble() }
+        // 🎯 TILT: Angle relative to horizon (0 = Camera pointing straight at wall)
+        packet["wallTilt"] = atan2(fY, horizontalDist) * (180.0 / PI)
 
-    // 🎯 ROBUST TILT CALCULATION (Using Forward Vector)
-    // local -Z axis of camera is forward. Column 3 of matrix: indices 8, 9, 10
-    val forwardX = -camMat[8].toDouble()
-    val forwardY = -camMat[9].toDouble()
-    val forwardZ = -camMat[10].toDouble()
-    val horizontalDist = sqrt(forwardX * forwardX + forwardZ * forwardZ)
-    val phoneTilt = atan2(forwardY, horizontalDist) * (180.0 / PI)
-    packet["wallTilt"] = phoneTilt 
+        // 4. Hit Test Logic (Relative Angle)
+        val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
+        val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
 
-    // 3. Hit Test Logic
-    val hits = frame.hitTest(sceneView.width / 2f, sceneView.height / 2f)
-    val bestHit = hits.firstOrNull { it.trackable is Plane } ?: hits.firstOrNull { it.trackable is DepthPoint }
+        if (bestHit != null) {
+            val hp = bestHit.hitPose
+            val normal = hp.yAxis // ✅ Always use Y-axis for ARCore Plane normals
+            
+            packet["hit"] = mapOf("transform" to FloatArray(16).also { hp.toMatrix(it, 0) }.map { it.toDouble() })
+            packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
+            packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
+            packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
+            packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
 
-    if (bestHit != null) {
-        val hp = bestHit.hitPose
-        val hpMat = FloatArray(16).also { hp.toMatrix(it, 0) }
-        val normal = hp.yAxis // ✅ Correct: Y is Plane Normal
-
-        packet["hit"] = mapOf("transform" to hpMat.map { it.toDouble() })
-        packet["hitType"] = if (abs(normal[1]) < 0.5) "VERTICAL" else "HORIZONTAL"
-        packet["distance"] = sqrt(((hp.tx()-camPose.tx()).pow(2) + (hp.ty()-camPose.ty()).pow(2) + (hp.tz()-camPose.tz()).pow(2)).toDouble())
-        packet["worldPosition"] = listOf(hp.tx().toDouble(), hp.ty().toDouble(), hp.tz().toDouble())
-        packet["wallNormal"] = listOf(normal[0].toDouble(), normal[1].toDouble(), normal[2].toDouble())
-
-        // 🎯 RELATIVE ANGLE: Phone heading vs Wall normal
-        val camYaw = atan2(forwardX, forwardZ)
-        val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
-        var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI)
-        
-        while (relAngle > 180) relAngle -= 360
-        while (relAngle < -180) relAngle += 360
-        packet["wallAngle"] = relAngle
-
+            // 🎯 RELATIVE ANGLE: Compare Camera Heading to Wall Normal
+            val camYaw = atan2(fX, fZ)
+            val wallYaw = atan2(normal[0].toDouble(), normal[2].toDouble())
+            var relAngle = (camYaw - wallYaw - PI) * (180.0 / PI) // PI offset makes "looking at wall" = 0
+            
+            while (relAngle > 180) relAngle -= 360
+            while (relAngle < -180) relAngle += 360
+            packet["wallAngle"] = relAngle
         } else {
-            // SEARCHING STATE: Provide Device Orientation so the UI doesn't freeze or flicker
             packet["hitType"] = "SEARCHING"
-            packet["wallTilt"] = atan2(forwardY, horizontalDist) * (180.0 / PI)
-            packet["wallAngle"] = atan2(forwardX, forwardZ) * (180.0 / PI)
+            packet["wallAngle"] = atan2(fX, fZ) * (180.0 / PI) // Fallback to world heading
             packet["distance"] = null
-            packet["wallNormal"] = null
-            packet["worldPosition"] = null
         }
 
         sendTelemetryPacket(packet.filterValues { it != null } as Map<String, Any>)
