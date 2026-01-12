@@ -147,6 +147,9 @@ class ArView(
             while (relAngle > 180) relAngle -= 360
             while (relAngle < -180) relAngle += 360
             packet["wallAngle"] = relAngle
+
+            val roll = atan2(camMat[4].toDouble(), camMat[5].toDouble()) * (180.0 / PI)
+            packet["phoneRoll"] = roll
         } else {
             packet["hitType"] = "SEARCHING"
             packet["wallAngle"] = atan2(fX, fZ) * (180.0 / PI) // Fallback to world heading
