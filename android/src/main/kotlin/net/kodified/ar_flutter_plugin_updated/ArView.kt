@@ -99,9 +99,22 @@ class ArView(
         // 🎯 FIX 1: Physical vs Logical Resolution Bridge
         // We need the intrinsics to build the synthetic matrix in Dart
         val intrinsics = camera.imageIntrinsics
-        val sensorSize = intrinsics.imageDimensions
-        val focalLength = intrinsics.focalLength
-        val principalPoint = intrinsics.principalPoint
+        val sW = intrinsics.imageDimensions[0].toDouble()
+        val sH = intrinsics.imageDimensions[1].toDouble()
+        val vW = sceneView.width.toDouble()
+        val vH = sceneView.height.toDouble()
+
+        // Calculate how much the camera image is scaled to fit the view
+        val scaleX = vW / sW
+        val scaleY = vH / sH
+
+        // Send scaled intrinsics so Dart sees "Screen Pixels" instead of "Sensor Pixels"
+        packet["fx"] = intrinsics.focalLength[0].toDouble() * scaleX
+        packet["fy"] = intrinsics.focalLength[1].toDouble() * scaleY
+        packet["cx"] = intrinsics.principalPoint[0].toDouble() * scaleX
+        packet["cy"] = intrinsics.principalPoint[1].toDouble() * scaleY
+        packet["sensorWidth"] = vW
+        packet["sensorHeight"] = vH
 
         // 🎯 FIX 2: Handle Display Rotation
         // ARCore intrinsics are ALWAYS in sensor space. We must tell Dart the rotation
@@ -110,14 +123,6 @@ class ArView(
         val rotation = display.rotation // 0=Portrait, 1=Landscape, etc.
         packet["displayRotation"] = rotation
         
-        // Send raw physical data
-        packet["fx"] = focalLength[0].toDouble()
-        packet["fy"] = focalLength[1].toDouble()
-        packet["cx"] = principalPoint[0].toDouble()
-        packet["cy"] = principalPoint[1].toDouble()
-        packet["sensorWidth"] = sensorSize[0].toDouble()
-        packet["sensorHeight"] = sensorSize[1].toDouble()
-
         // 1. Core Status
         packet["trackingState"] = camera.trackingState.name
         packet["trackingFailureReason"] = camera.trackingFailureReason.name
